@@ -1,10 +1,11 @@
 package com.br.langchain4j.customer.application;
 
+import com.br.langchain4j.customer.api.CustomerUseCase;
 import com.br.langchain4j.customer.domain.Customer;
 import com.br.langchain4j.customer.domain.enums.CustomerType;
-import com.br.langchain4j.customer.dto.CreateCustomerRequest;
-import com.br.langchain4j.customer.dto.CustomerLookupResponse;
-import com.br.langchain4j.customer.dto.CustomerResponse;
+import com.br.langchain4j.customer.api.CreateCustomerRequest;
+import com.br.langchain4j.customer.api.CustomerLookupResponse;
+import com.br.langchain4j.customer.api.CustomerResponse;
 import com.br.langchain4j.customer.repository.CustomerRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,7 +16,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 @Service
-public class CustomerService implements CustomerPublicApi {
+public class CustomerService implements CustomerUseCase {
 
     private static final Logger logger = LoggerFactory.getLogger(CustomerService.class);
 

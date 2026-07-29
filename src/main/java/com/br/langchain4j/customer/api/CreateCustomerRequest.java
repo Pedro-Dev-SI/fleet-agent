@@ -1,4 +1,4 @@
-package com.br.langchain4j.customer.dto;
+package com.br.langchain4j.customer.api;
 
 import jakarta.validation.constraints.NotBlank;
 

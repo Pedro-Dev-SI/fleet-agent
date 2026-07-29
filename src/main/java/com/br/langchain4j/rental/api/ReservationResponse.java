@@ -1,4 +1,4 @@
-package com.br.langchain4j.rental.dto;
+package com.br.langchain4j.rental.api;
 
 import java.time.LocalDateTime;
 

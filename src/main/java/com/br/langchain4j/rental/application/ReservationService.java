@@ -1,13 +1,14 @@
 package com.br.langchain4j.rental.application;
 
-import com.br.langchain4j.customer.application.CustomerPublicApi;
-import com.br.langchain4j.customer.dto.CustomerLookupResponse;
-import com.br.langchain4j.customer.dto.CustomerResponse;
+import com.br.langchain4j.customer.api.CustomerUseCase;
+import com.br.langchain4j.customer.api.CustomerLookupResponse;
+import com.br.langchain4j.customer.api.CustomerResponse;
+import com.br.langchain4j.rental.api.ReservationUseCase;
 import com.br.langchain4j.rental.domain.Car;
 import com.br.langchain4j.rental.domain.Reservation;
-import com.br.langchain4j.rental.dto.CreateReservationRequest;
-import com.br.langchain4j.rental.dto.ReservationCompletedResponse;
-import com.br.langchain4j.rental.dto.ReservationResponse;
+import com.br.langchain4j.rental.api.CreateReservationRequest;
+import com.br.langchain4j.rental.api.ReservationCompletedResponse;
+import com.br.langchain4j.rental.api.ReservationResponse;
 import com.br.langchain4j.rental.domain.enums.StatusVeichleEnum;
 import com.br.langchain4j.rental.repository.ReservationRepository;
 import org.springframework.stereotype.Service;
@@ -17,21 +18,21 @@ import java.util.Optional;
 import java.util.UUID;
 
 @Service
-public class ReservationService {
+public class ReservationService implements ReservationUseCase {
 
 
     private final ReservationRepository reservationRepository;
-    private final CarServce carServce;
-    private final CustomerPublicApi customerPublicApi;
+    private final CarService carService;
+    private final CustomerUseCase customerUseCase;
 
     public ReservationService(
             ReservationRepository reservationRepository,
-            CarServce carServce,
-            CustomerPublicApi customerPublicApi
+            CarService carService,
+            CustomerUseCase customerUseCase
     ) {
         this.reservationRepository = reservationRepository;
-        this.carServce = carServce;
-        this.customerPublicApi = customerPublicApi;
+        this.carService = carService;
+        this.customerUseCase = customerUseCase;
     }
 
     public ReservationCompletedResponse findByCustomerDocument(String document) {
@@ -44,7 +45,7 @@ public class ReservationService {
             );
         }
 
-        CustomerLookupResponse customerResponse = customerPublicApi.findByDocument(document);
+        CustomerLookupResponse customerResponse = customerUseCase.findByDocument(document);
 
         if (!customerResponse.found() || customerResponse.customer() == null) {
             return new ReservationCompletedResponse(
@@ -98,7 +99,7 @@ public class ReservationService {
             );
         }
 
-        CustomerLookupResponse customerLookup = customerPublicApi.findByDocument(reservationRequest.document());
+        CustomerLookupResponse customerLookup = customerUseCase.findByDocument(reservationRequest.document());
 
         if (!customerLookup.found()) {
             return new ReservationCompletedResponse(
@@ -110,7 +111,7 @@ public class ReservationService {
 
         CustomerResponse customer = customerLookup.customer();
 
-        if (!carServce.checkAvailabilityByCarModel(reservationRequest.carModel())) {
+        if (!carService.checkAvailabilityByCarModel(reservationRequest.carModel())) {
             return new ReservationCompletedResponse(
                     false,
                     null,
@@ -118,7 +119,7 @@ public class ReservationService {
             );
         }
 
-        Car car = carServce.findCarByModel(reservationRequest.carModel());
+        Car car = carService.findCarByModel(reservationRequest.carModel());
         car.setStatus(StatusVeichleEnum.RESERVADO);
 
         Reservation reservation = new Reservation(
@@ -140,14 +141,14 @@ public class ReservationService {
 
     private Optional<Reservation> findReservationBySessionIdAndCarModelOptional(UUID sessionId, String carModel) {
 
-        Car car = carServce.findCarByModel(carModel);
+        Car car = carService.findCarByModel(carModel);
 
         return reservationRepository.findBySessionIdAndCarId(sessionId, car.getId());
 
     }
 
     private ReservationResponse toResponse(Reservation reservation) {
-        CustomerLookupResponse customerLookup = customerPublicApi.findById(reservation.getCustomerId());
+        CustomerLookupResponse customerLookup = customerUseCase.findById(reservation.getCustomerId());
         CustomerResponse customer = customerLookup.customer();
 
         if (!customerLookup.found() || customer == null) {

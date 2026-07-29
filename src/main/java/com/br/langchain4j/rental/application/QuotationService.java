@@ -1,5 +1,6 @@
 package com.br.langchain4j.rental.application;
 
+import com.br.langchain4j.rental.api.QuotationUseCase;
 import com.br.langchain4j.rental.domain.RentalCategory;
 import com.br.langchain4j.rental.repository.RentalCategoryRepository;
 import org.slf4j.Logger;
@@ -10,7 +11,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 
 @Service
-public class QuotationService {
+public class QuotationService implements QuotationUseCase {
 
     private static final Logger logger = LoggerFactory.getLogger(QuotationService.class);
 

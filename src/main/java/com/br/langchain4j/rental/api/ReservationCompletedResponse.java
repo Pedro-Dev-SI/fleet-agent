@@ -1,4 +1,4 @@
-package com.br.langchain4j.rental.dto;
+package com.br.langchain4j.rental.api;
 
 public record ReservationCompletedResponse(
         Boolean success,

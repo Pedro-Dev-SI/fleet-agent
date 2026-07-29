@@ -1,8 +1,9 @@
 package com.br.langchain4j.rental.application;
 
+import com.br.langchain4j.rental.api.VehicleAvailabilityUseCase;
 import com.br.langchain4j.rental.domain.Car;
 import com.br.langchain4j.rental.domain.enums.StatusVeichleEnum;
-import com.br.langchain4j.rental.dto.AvailableCarResponse;
+import com.br.langchain4j.rental.api.AvailableCarResponse;
 import com.br.langchain4j.rental.repository.CarRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,14 +12,14 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 
 @Service
-public class CarServce {
+public class CarService implements VehicleAvailabilityUseCase {
 
-    private static final Logger logger = LoggerFactory.getLogger(CarServce.class);
+    private static final Logger logger = LoggerFactory.getLogger(CarService.class);
 
 
     private final CarRepository carRepository;
 
-    public CarServce(CarRepository carRepository) {
+    public CarService(CarRepository carRepository) {
         this.carRepository = carRepository;
     }
 

@@ -1,4 +1,4 @@
-package com.br.langchain4j.rental.dto;
+package com.br.langchain4j.rental.api;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;

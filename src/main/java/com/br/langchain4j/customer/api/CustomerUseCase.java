@@ -1,11 +1,8 @@
-package com.br.langchain4j.customer.application;
-
-import com.br.langchain4j.customer.dto.CreateCustomerRequest;
-import com.br.langchain4j.customer.dto.CustomerLookupResponse;
+package com.br.langchain4j.customer.api;
 
 import java.util.UUID;
 
-public interface CustomerPublicApi {
+public interface CustomerUseCase {
 
     CustomerLookupResponse createNewCustomer(CreateCustomerRequest request);
 

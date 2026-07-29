@@ -1,14 +1,14 @@
 package com.br.langchain4j.rental.application;
 
-import com.br.langchain4j.customer.application.CustomerPublicApi;
-import com.br.langchain4j.customer.dto.CustomerLookupResponse;
-import com.br.langchain4j.customer.dto.CustomerResponse;
+import com.br.langchain4j.customer.api.CustomerUseCase;
+import com.br.langchain4j.customer.api.CustomerLookupResponse;
+import com.br.langchain4j.customer.api.CustomerResponse;
 import com.br.langchain4j.rental.domain.Car;
 import com.br.langchain4j.rental.domain.RentalCategory;
 import com.br.langchain4j.rental.domain.Reservation;
 import com.br.langchain4j.rental.domain.enums.StatusVeichleEnum;
-import com.br.langchain4j.rental.dto.CreateReservationRequest;
-import com.br.langchain4j.rental.dto.ReservationCompletedResponse;
+import com.br.langchain4j.rental.api.CreateReservationRequest;
+import com.br.langchain4j.rental.api.ReservationCompletedResponse;
 import com.br.langchain4j.rental.repository.ReservationRepository;
 import org.junit.jupiter.api.Test;
 
@@ -29,12 +29,12 @@ import static org.mockito.Mockito.when;
 class ReservationServiceTest {
 
     private final ReservationRepository reservationRepository = mock(ReservationRepository.class);
-    private final CarServce carServce = mock(CarServce.class);
-    private final CustomerPublicApi customerPublicApi = mock(CustomerPublicApi.class);
+    private final CarService carService = mock(CarService.class);
+    private final CustomerUseCase customerUseCase = mock(CustomerUseCase.class);
     private final ReservationService reservationService = new ReservationService(
             reservationRepository,
-            carServce,
-            customerPublicApi
+            carService,
+            customerUseCase
     );
 
     @Test
@@ -50,9 +50,9 @@ class ReservationServiceTest {
                 LocalDateTime.parse("2026-08-05T10:00:00")
         );
 
-        when(carServce.findCarByModel("Onix")).thenReturn(car);
+        when(carService.findCarByModel("Onix")).thenReturn(car);
         when(reservationRepository.findBySessionIdAndCarId(sessionId, null)).thenReturn(Optional.of(existingReservation));
-        when(customerPublicApi.findById(customerId)).thenReturn(foundCustomer(customerId));
+        when(customerUseCase.findById(customerId)).thenReturn(foundCustomer(customerId));
 
         ReservationCompletedResponse response = reservationService.createReservation(request(sessionId));
 
@@ -65,7 +65,7 @@ class ReservationServiceTest {
     @Test
     void shouldRejectReservationWhenEndDateIsNotAfterStartDate() {
         UUID sessionId = UUID.randomUUID();
-        when(carServce.findCarByModel("Onix")).thenReturn(car());
+        when(carService.findCarByModel("Onix")).thenReturn(car());
         when(reservationRepository.findBySessionIdAndCarId(sessionId, null)).thenReturn(Optional.empty());
 
         CreateReservationRequest request = new CreateReservationRequest(
@@ -80,23 +80,23 @@ class ReservationServiceTest {
 
         assertThat(response.success()).isFalse();
         assertThat(response.message()).isEqualTo("Data de entrega deve ser posterior à data de retirada");
-        verify(customerPublicApi, never()).findByDocument(anyString());
+        verify(customerUseCase, never()).findByDocument(anyString());
         verify(reservationRepository, never()).save(any());
     }
 
     @Test
     void shouldRejectReservationWhenCustomerDoesNotExist() {
         UUID sessionId = UUID.randomUUID();
-        when(carServce.findCarByModel("Onix")).thenReturn(car());
+        when(carService.findCarByModel("Onix")).thenReturn(car());
         when(reservationRepository.findBySessionIdAndCarId(sessionId, null)).thenReturn(Optional.empty());
-        when(customerPublicApi.findByDocument("123.456.789-00"))
+        when(customerUseCase.findByDocument("123.456.789-00"))
                 .thenReturn(new CustomerLookupResponse(false, null, "Cliente não encontrado"));
 
         ReservationCompletedResponse response = reservationService.createReservation(request(sessionId));
 
         assertThat(response.success()).isFalse();
         assertThat(response.message()).isEqualTo("Cliente não encontrado");
-        verify(carServce, never()).checkAvailabilityByCarModel(anyString());
+        verify(carService, never()).checkAvailabilityByCarModel(anyString());
         verify(reservationRepository, never()).save(any());
     }
 
@@ -104,10 +104,10 @@ class ReservationServiceTest {
     void shouldRejectReservationWhenCarIsUnavailable() {
         UUID sessionId = UUID.randomUUID();
         UUID customerId = UUID.randomUUID();
-        when(carServce.findCarByModel("Onix")).thenReturn(car());
+        when(carService.findCarByModel("Onix")).thenReturn(car());
         when(reservationRepository.findBySessionIdAndCarId(sessionId, null)).thenReturn(Optional.empty());
-        when(customerPublicApi.findByDocument("123.456.789-00")).thenReturn(foundCustomer(customerId));
-        when(carServce.checkAvailabilityByCarModel("Onix")).thenReturn(false);
+        when(customerUseCase.findByDocument("123.456.789-00")).thenReturn(foundCustomer(customerId));
+        when(carService.checkAvailabilityByCarModel("Onix")).thenReturn(false);
 
         ReservationCompletedResponse response = reservationService.createReservation(request(sessionId));
 
@@ -122,11 +122,11 @@ class ReservationServiceTest {
         UUID customerId = UUID.randomUUID();
         Car car = car();
 
-        when(carServce.findCarByModel("Onix")).thenReturn(car);
+        when(carService.findCarByModel("Onix")).thenReturn(car);
         when(reservationRepository.findBySessionIdAndCarId(sessionId, null)).thenReturn(Optional.empty());
-        when(customerPublicApi.findByDocument("123.456.789-00")).thenReturn(foundCustomer(customerId));
-        when(carServce.checkAvailabilityByCarModel("Onix")).thenReturn(true);
-        when(customerPublicApi.findById(customerId)).thenReturn(foundCustomer(customerId));
+        when(customerUseCase.findByDocument("123.456.789-00")).thenReturn(foundCustomer(customerId));
+        when(carService.checkAvailabilityByCarModel("Onix")).thenReturn(true);
+        when(customerUseCase.findById(customerId)).thenReturn(foundCustomer(customerId));
         when(reservationRepository.save(any(Reservation.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         ReservationCompletedResponse response = reservationService.createReservation(request(sessionId));

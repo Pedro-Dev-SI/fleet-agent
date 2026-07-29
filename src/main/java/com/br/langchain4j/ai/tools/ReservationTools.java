@@ -1,8 +1,8 @@
 package com.br.langchain4j.ai.tools;
 
-import com.br.langchain4j.rental.application.ReservationService;
-import com.br.langchain4j.rental.dto.CreateReservationRequest;
-import com.br.langchain4j.rental.dto.ReservationCompletedResponse;
+import com.br.langchain4j.rental.api.ReservationUseCase;
+import com.br.langchain4j.rental.api.CreateReservationRequest;
+import com.br.langchain4j.rental.api.ReservationCompletedResponse;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.ToolMemoryId;
@@ -14,10 +14,10 @@ import java.util.UUID;
 @Component
 public class ReservationTools {
 
-    private final ReservationService reservationService;
+    private final ReservationUseCase reservationUseCase;
 
-    public ReservationTools(ReservationService reservationService) {
-        this.reservationService = reservationService;
+    public ReservationTools(ReservationUseCase reservationUseCase) {
+        this.reservationUseCase = reservationUseCase;
     }
 
     @Tool("Realiza uma nova reserva de um carro escolhido pelo cliente")
@@ -35,11 +35,11 @@ public class ReservationTools {
                 endDate,
                 carModel
         );
-        return reservationService.createReservation(reservationRequest);
+        return reservationUseCase.createReservation(reservationRequest);
     }
 
     @Tool("Busca reserva no banco para retornar para o cliente quando ele precisar")
     public ReservationCompletedResponse reviewReservation(@P("CPF do cliente") String document){
-        return reservationService.findByCustomerDocument(document);
+        return reservationUseCase.findByCustomerDocument(document);
     }
 }
