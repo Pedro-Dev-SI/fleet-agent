@@ -46,6 +46,10 @@ public class Reservation {
     @Column(name = "end_date", nullable = false)
     private LocalDateTime endDate;
 
+    public UUID getId() {
+        return id;
+    }
+
     public Car getCar() {
         return car;
     }

@@ -4,6 +4,7 @@ import com.br.langchain4j.customer.api.CustomerUseCase;
 import com.br.langchain4j.customer.api.CustomerLookupResponse;
 import com.br.langchain4j.customer.api.CustomerResponse;
 import com.br.langchain4j.rental.api.ReservationUseCase;
+import com.br.langchain4j.rental.api.event.ReservationCreatedEvent;
 import com.br.langchain4j.rental.domain.Car;
 import com.br.langchain4j.rental.domain.Reservation;
 import com.br.langchain4j.rental.api.CreateReservationRequest;
@@ -11,6 +12,7 @@ import com.br.langchain4j.rental.api.ReservationCompletedResponse;
 import com.br.langchain4j.rental.api.ReservationResponse;
 import com.br.langchain4j.rental.domain.enums.StatusVeichleEnum;
 import com.br.langchain4j.rental.repository.ReservationRepository;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,15 +26,17 @@ public class ReservationService implements ReservationUseCase {
     private final ReservationRepository reservationRepository;
     private final CarService carService;
     private final CustomerUseCase customerUseCase;
+    private final ApplicationEventPublisher eventPublisher;
 
     public ReservationService(
             ReservationRepository reservationRepository,
             CarService carService,
-            CustomerUseCase customerUseCase
+            CustomerUseCase customerUseCase, ApplicationEventPublisher eventPublisher
     ) {
         this.reservationRepository = reservationRepository;
         this.carService = carService;
         this.customerUseCase = customerUseCase;
+        this.eventPublisher = eventPublisher;
     }
 
     public ReservationCompletedResponse findByCustomerDocument(String document) {
@@ -131,6 +135,14 @@ public class ReservationService implements ReservationUseCase {
         );
 
         Reservation savedReservation = reservationRepository.save(reservation);
+
+        eventPublisher.publishEvent(new ReservationCreatedEvent(
+                savedReservation.getId(),
+                savedReservation.getCustomerId(),
+                savedReservation.getCar().getId(),
+                savedReservation.getStartDate(),
+                savedReservation.getEndDate()
+        ));
 
         return new ReservationCompletedResponse(
                 true,

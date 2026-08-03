@@ -1,574 +1,786 @@
-# Trilha de desafios LangChain4j no projeto
+# Evolução do backend de locadora com Spring Modulith e LangChain4j
 
-Este documento foi escrito olhando para o projeto atual, que hoje tem um assistente simples de locadora corporativa:
+Este documento é um guia de evolução do projeto. A proposta não é apenas listar tarefas, mas explicar o motivo de cada decisão, a ordem recomendada e como verificar se cada etapa realmente funciona.
 
-- `AssistantAiService`: define o comportamento do assistente com `@SystemMessage` e `@UserMessage`.
-- `AssistantConfig`: cria o `GoogleAiGeminiChatModel` e registra a tool no `AiServices`.
-- `AssistantTools`: expõe uma função Java com `@Tool` para calcular cotação.
-- `AssistantAiController`: recebe uma mensagem via `POST /api/assistant`.
+O projeto representa o backend de uma locadora de veículos online. A inteligência artificial funciona como um canal de atendimento: conversa com o cliente, consulta políticas por RAG e chama ferramentas Java para cadastrar clientes, calcular cotações, consultar veículos e criar reservas.
 
-A ideia da trilha é evoluir esse projeto aos poucos, aprendendo LangChain4j sem perder a arquitetura de vista.
+A IA não deve ser responsável pelas regras de negócio. Ela interpreta a conversa e chama casos de uso do backend. Quem decide se um veículo pode ser reservado, quanto custa a locação ou se um cliente existe são os módulos de negócio.
 
-## Antes de começar
+## 1. O que já existe
 
-### 1. Corrigir configuração local de Java
+Antes de planejar o próximo passo, é importante reconhecer o que já foi construído.
 
-O `pom.xml` está configurado com:
+O projeto atualmente possui:
 
-```xml
-<java.version>25</java.version>
-```
+- Spring Boot 3.5 e Java 25;
+- LangChain4j com Ollama e Gemini opcional;
+- memória de conversa identificada por `sessionId`;
+- guardrails de entrada e saída;
+- tools para cotação, clientes, veículos e reservas;
+- RAG com documentos Markdown;
+- embeddings persistidos em PostgreSQL com pgvector;
+- versionamento dos documentos ingeridos;
+- módulos `ai`, `customer`, `knowledge` e `rental`;
+- limites de módulos verificados pelo Spring Modulith;
+- diagramas PlantUML gerados pelo `DocumentationTest`;
+- Flyway para evolução do banco;
+- testes unitários das principais regras existentes.
 
-Ao rodar `./mvnw test`, o build falhou com:
+Portanto, a primeira trilha de aprendizado de LangChain4j já foi superada. A próxima fase deve transformar o exemplo de IA em um backend de locadora mais completo e arquiteturalmente convincente.
+
+## 2. Visão da arquitetura
+
+O fluxo principal deve continuar assim:
 
 ```text
-Fatal error compiling: error: release version 25 not supported
+Cliente
+  -> API HTTP do assistente
+  -> módulo ai
+  -> tool do LangChain4j
+  -> API pública do módulo de negócio
+  -> serviço de aplicação
+  -> domínio e banco de dados
 ```
 
-Desafio inicial:
+Exemplo de criação de reserva:
 
-- Ajuste o ambiente para usar JDK 25 ou reduza temporariamente o `java.version` para uma versão instalada, como 21.
-- Rode `./mvnw test` até pelo menos compilar.
-
-Critério de aceite:
-
-- `./mvnw test` compila.
-- Você sabe explicar qual JDK está sendo usado pelo Maven.
-
-### 2. Remover segredo do `application.yaml`
-
-O projeto tem uma chave de API diretamente em `src/main/resources/application.yaml`. Isso é perigoso porque esse arquivo costuma ir para Git.
-
-Desafio:
-
-- Troque a configuração para usar variável de ambiente.
-- Exemplo:
-
-```yaml
-gemini:
-  api-key: ${GEMINI_API_KEY}
-  model: gemini-3.1-flash-lite
+```text
+Mensagem do cliente
+  -> AssistantAiService
+  -> ReservationTools
+  -> ReservationUseCase
+  -> ReservationService
+  -> valida cliente
+  -> valida veículo e período
+  -> salva a reserva
+  -> publica ReservationCreatedEvent
+  -> notification recebe o evento
 ```
 
-Critério de aceite:
+Observe que a IA é apenas uma entrada. No futuro, um controller REST tradicional poderá chamar o mesmo `ReservationUseCase` sem duplicar a regra de negócio.
 
-- A aplicação só sobe se `GEMINI_API_KEY` estiver configurada.
-- Nenhuma chave real fica versionada no projeto.
+### 2.1 Responsabilidade dos módulos
 
-Conceitos aprendidos:
+```text
+ai
+  Atendimento, memória, guardrails, RAG e adaptação das tools.
 
-- Configuração Spring Boot.
-- Separação entre código e segredo.
-- Preparação mínima para produção.
+customer
+  Cadastro, consulta e regras do cliente.
 
-### 3. Usar LLM local para testes gratuitos
+rental
+  Categorias, veículos, cotação, disponibilidade e reservas.
 
-Para evitar gastar cota do Gemini enquanto você aprende, use um modelo local com Ollama. Ele roda no seu computador e expõe uma API local em `http://localhost:11434`.
+knowledge
+  Ingestão, versionamento e recuperação da base de conhecimento.
 
-Fluxo sugerido:
+notification (próximo módulo)
+  Reação a eventos e confirmação de operações ao cliente.
+```
+
+### 2.2 Regra para escolher comunicação síncrona ou evento
+
+Use uma chamada síncrona quando o resultado for necessário para concluir a operação atual.
+
+Exemplos:
+
+- verificar se o cliente existe;
+- verificar se o veículo está disponível;
+- calcular o preço;
+- salvar a reserva;
+- impedir duas reservas incompatíveis.
+
+Use evento quando a operação principal já puder ser considerada concluída e outros módulos precisarem reagir.
+
+Exemplos:
+
+- enviar confirmação;
+- registrar auditoria;
+- atualizar métricas;
+- iniciar uma tarefa secundária de IA;
+- gerar um relatório.
+
+A regra prática é: se a falha da ação secundária não deve desfazer a reserva, essa ação é uma boa candidata a listener de evento.
+
+## 3. Por que não usar Kafka agora
+
+Kafka resolve comunicação distribuída, retenção de grandes fluxos de mensagens e integração entre processos independentes. Este projeto é um monólito modular executado como uma única aplicação.
+
+Adicionar Kafka agora traria:
+
+- broker adicional;
+- serialização e versionamento de mensagens;
+- configuração de consumidores;
+- tratamento de duplicidade e retentativas distribuídas;
+- mais infraestrutura para testar e demonstrar.
+
+Nada disso é necessário para ensinar desacoplamento entre os módulos atuais. Comece com `ApplicationEventPublisher` e listeners transacionais do Spring. Se um dia um módulo for extraído para outro serviço, o contrato do evento já ajudará na evolução.
+
+## 4. Como validar a arquitetura antes de continuar
+
+### Passo 1: executar os testes
 
 ```bash
-ollama pull llama3.2
-ollama run llama3.2
+./mvnw test
 ```
 
-Depois, adicione a dependência do Ollama no `pom.xml`, usando a mesma família de versão do LangChain4j que o projeto já usa:
+Se o Maven estiver usando outro JDK:
 
-```xml
-<dependency>
-    <groupId>dev.langchain4j</groupId>
-    <artifactId>langchain4j-ollama</artifactId>
-    <version>1.17.1-beta27</version>
-</dependency>
+```bash
+JAVA_HOME=/home/youx/.sdkman/candidates/java/25.0.3-tem ./mvnw test
 ```
 
-Crie um profile separado para escolher o provedor:
+O objetivo não é apenas obter `BUILD SUCCESS`. Você deve saber explicar que testes rápidos não podem depender de Gemini, Ollama ou outro serviço externo.
 
-```yaml
-app:
-  ai:
-    provider: ollama
+### Passo 2: verificar os limites dos módulos
 
-ollama:
-  base-url: http://localhost:11434
-  model: llama3.2
+O teste `ModularityTest` executa:
+
+```java
+ApplicationModules.of(Langchain4jApplication.class).verify();
 ```
 
-Direção de implementação:
+Ele detecta dependências proibidas e ciclos entre os módulos. Execute esse teste sempre que criar uma nova integração modular.
 
-- manter Gemini para testes pontuais de qualidade;
-- usar Ollama para testes repetitivos, tools, memória, guardrails e RAG;
-- criar uma configuração Spring separada para `OllamaChatModel`;
-- deixar o provider selecionável por profile ou propriedade.
+### Passo 3: gerar os diagramas
 
-Critério de aceite:
+O `DocumentationTest` gera os arquivos PlantUML:
 
-- A aplicação roda sem `GEMINI_API_KEY` quando `app.ai.provider=ollama`.
-- O endpoint `/api/assistant` responde usando modelo local.
-- Os testes automatizados continuam sem chamar API externa.
+```bash
+./mvnw -Dtest=DocumentationTest test
+```
 
-Limitações:
-
-- O modelo local pode ser menos inteligente que Gemini.
-- A velocidade depende da sua máquina.
-- Para validar comportamento final de produção, ainda vale testar às vezes com o modelo real.
-
-Conceitos aprendidos:
-
-- Modelo local.
-- Troca de provider por configuração.
-- Desenvolvimento sem custo de API.
-- Separação entre ambiente de estudo e ambiente real.
-
-## Observações sobre a arquitetura atual
-
-O pacote `com.br.langchain4j.ai` concentra controller, configuração, interface do assistente e tools. Para um exemplo pequeno está aceitável, mas conforme você adicionar RAG, memória, testes e regras de negócio, esse pacote tende a ficar confuso.
-
-Uma divisão simples para evoluir seria:
+Saída esperada:
 
 ```text
-com.br.langchain4j
-  assistant
-    api
-    application
-    config
-    tools
-  rental
-    domain
-    application
-  knowledge
-    ingestion
-    retrieval
-    config
+target/spring-modulith-docs/
+├── components.puml
+├── module-ai.puml
+├── module-customer.puml
+├── module-knowledge.puml
+└── module-rental.puml
 ```
 
-Não precisa refatorar tudo agora. Use essa estrutura como direção quando os desafios começarem a criar classes novas.
+Depois de criar `notification`, execute esse teste novamente. O novo módulo e sua dependência de eventos devem aparecer no diagrama.
 
-Também existe uma decisão importante no projeto atual: `AssistantAiService` está anotado com `@AiService`, mas `AssistantConfig` também cria manualmente um bean com `AiServices.builder(...)`. Para estudo isso pode passar despercebido, mas com mais configurações vale escolher uma estratégia principal:
+---
 
-- usar `@AiService` e deixar o starter do LangChain4j/Spring criar o serviço;
-- ou remover `@AiService` e manter a criação explícita no `AssistantConfig`.
+# Fase 1 — Eventos de reserva dentro do monólito
 
-Como você já está registrando tools manualmente, a criação explícita em `AssistantConfig` é uma boa opção para aprender o que está sendo ligado.
+## 5. Desafio: publicar `ReservationCreatedEvent`
 
-## Desafio 1: endurecer a tool de cotação
+### 5.1 O que você aprenderá
 
-Hoje `AssistantTools.calculateQuotation` consulta mapas em memória e calcula o valor. O problema é que uma categoria inválida ou `days <= 0` pode gerar erro ou resposta incorreta.
+Nesta etapa você aprenderá que um evento descreve algo que já aconteceu. Por isso, prefira um nome no passado: `ReservationCreatedEvent`, e não `CreateReservationEvent`.
 
-Arquivos prováveis:
+O evento não ordena que outro módulo faça algo. Ele informa que uma reserva foi criada e permite que zero ou mais listeners reajam.
 
-- `src/main/java/com/br/langchain4j/ai/AssistantTools.java`
-- Novo teste em `src/test/java/com/br/langchain4j/ai/AssistantToolsTest.java`
+### 5.2 O que não deve ir no evento
 
-O que implementar:
+Não publique:
 
-- Validar `category`.
-- Validar `days`.
-- Retornar mensagem clara quando os dados forem inválidos.
-- Adicionar `@P` nos parâmetros da tool para guiar melhor o modelo.
+- a entidade JPA `Reservation`;
+- a entidade `Customer`;
+- CPF completo;
+- objetos mutáveis;
+- serviços ou repositories.
 
-Exemplo de direção:
+Entidades JPA podem estar desconectadas da sessão e expõem detalhes internos do módulo. Dados pessoais também aumentam o risco de vazamento em logs.
+
+Publique um contrato imutável contendo identificadores e informações essenciais:
 
 ```java
-@Tool("Calcula o valor total do aluguel corporativo.")
-public String calculateQuotation(
-        @P("Categoria do carro: economico, suv ou premium") String category,
-        @P("Quantidade de dias do aluguel. Deve ser maior que zero") int days) {
-    // valida e calcula
-}
+public record ReservationCreatedEvent(
+        UUID reservationId,
+        UUID customerId,
+        UUID carId,
+        LocalDateTime startDate,
+        LocalDateTime endDate
+) {}
 ```
 
-Critérios de aceite:
+### 5.3 Arquivos previstos
 
-- Categoria `moto` não quebra a aplicação.
-- `days` igual a zero ou negativo retorna erro amigável.
-- O teste unitário cobre sucesso e erro.
-
-Conceitos aprendidos:
-
-- Function calling com `@Tool`.
-- Descrição de parâmetros com `@P`.
-- Validação defensiva em tools.
-- Teste unitário determinístico, sem chamar LLM.
-
-## Desafio 2: separar regra de negócio da tool
-
-Hoje a regra de preço está dentro da classe exposta ao modelo. Isso mistura duas responsabilidades: regra de locação e adaptação para LLM.
-
-Arquivos prováveis:
-
-- Novo `rental/domain/RentalCategory.java`
-- Novo `rental/application/QuotationService.java`
-- `assistant/tools/AssistantTools.java`
-
-O que implementar:
-
-- Criar um enum `RentalCategory`.
-- Criar um serviço `QuotationService`.
-- Deixar `AssistantTools` apenas como adaptador entre LangChain4j e sua regra de negócio.
-
-Critérios de aceite:
-
-- `AssistantTools` não conhece os mapas de preço diretamente.
-- `QuotationService` pode ser testado sem Spring e sem LangChain4j.
-- A resposta do endpoint continua funcionando.
-
-Conceitos aprendidos:
-
-- Arquitetura em camadas simples.
-- Tools como adapters, não como domínio.
-- Testes rápidos de regra de negócio.
-
-## Desafio 3: melhorar o contrato HTTP
-
-O controller recebe o corpo como `String` puro. Funciona para estudo, mas limita evolução.
-
-Arquivos prováveis:
-
-- `AssistantAiController.java`
-- Novo DTO `AssistantRequest`
-- Novo DTO `AssistantResponse`
-
-O que implementar:
-
-```json
-{
-  "message": "Quanto custa um SUV por 3 dias?"
-}
+```text
+src/main/java/com/br/langchain4j/rental/api/event/
+├── ReservationCreatedEvent.java
+└── package-info.java
 ```
 
-Resposta sugerida:
-
-```json
-{
-  "answer": "Cotação: suv por 3 dias -> R$ ...",
-  "model": "gemini-3.1-flash-lite"
-}
-```
-
-Critérios de aceite:
-
-- O endpoint aceita JSON.
-- Entrada vazia retorna erro HTTP adequado.
-- O controller não contém regra de IA nem regra de locação.
-
-Conceitos aprendidos:
-
-- Contrato de API.
-- DTOs.
-- Separação entre controller e aplicação.
-
-## Desafio 4: criar memória de conversa
-
-Hoje cada pergunta é independente. Para aprender AI Services, adicione memória por sessão.
-
-Arquivos prováveis:
-
-- `AssistantAiService.java`
-- `AssistantConfig.java`
-- DTO de request com `sessionId`
-
-O que implementar:
-
-- Adicionar `@MemoryId` na interface.
-- Configurar `chatMemoryProvider`.
-- Limitar a janela de memória, por exemplo a 10 mensagens.
-
-Exemplo de direção:
+O `package-info.java` deve expor esse pacote como uma interface nomeada:
 
 ```java
-Result<String> handleRequest(@MemoryId String sessionId, @UserMessage String userMessage);
+@org.springframework.modulith.NamedInterface("events")
+package com.br.langchain4j.rental.api.event;
 ```
 
-Critérios de aceite:
+Isso cria o contrato `rental::events`. Outros módulos poderão consumir os eventos sem acessar detalhes internos de `rental`.
 
-- Duas mensagens com o mesmo `sessionId` compartilham contexto.
-- Duas sessões diferentes não compartilham contexto.
-- A memória tem limite.
+### 5.4 Preparar a entidade
 
-Conceitos aprendidos:
+O evento precisa do identificador da reserva salva. Se `Reservation` ainda não possuir `getId()`, adicione esse método.
 
-- `@MemoryId`.
-- `MessageWindowChatMemory`.
-- Isolamento por usuário ou sessão.
-- Custo de contexto em aplicações com LLM.
+Não crie um setter público para o ID. O identificador continua sendo controlado pela persistência.
 
-## Desafio 5: criar guardrails simples antes e depois do modelo
+### 5.5 Publicar no serviço de aplicação
 
-Seu `@SystemMessage` já orienta o modelo a responder apenas sobre locação corporativa, mas prompt não é barreira de segurança. Crie validações explícitas no código.
+Injete `ApplicationEventPublisher` no `ReservationService`:
 
-Arquivos prováveis:
+```java
+private final ApplicationEventPublisher eventPublisher;
+```
 
-- Novo `assistant/application/AssistantGuardrailService.java`
-- `AssistantAiController.java` ou um serviço intermediário
-- Testes unitários
+Publique o evento somente depois de `reservationRepository.save(...)`:
 
-O que implementar:
+```java
+Reservation savedReservation = reservationRepository.save(reservation);
 
-- Bloquear mensagem vazia.
-- Bloquear mensagem grande demais.
-- Bloquear perguntas claramente fora do domínio antes de chamar a LLM.
-- Validar a resposta final para não devolver conteúdo sensível, stack trace ou texto vazio.
+eventPublisher.publishEvent(new ReservationCreatedEvent(
+        savedReservation.getId(),
+        savedReservation.getCustomerId(),
+        savedReservation.getCar().getId(),
+        savedReservation.getStartDate(),
+        savedReservation.getEndDate()
+));
+```
 
-Critérios de aceite:
+Não publique nos caminhos de validação que retornam erro. Uma tentativa recusada não é uma reserva criada.
 
-- Perguntas fora do domínio recebem resposta controlada.
-- Mensagens inválidas não chamam o modelo.
-- Existem testes para os bloqueios.
+### 5.6 Por que publicar dentro da transação
 
-Conceitos aprendidos:
+`createReservation` já é transacional. O evento é publicado durante essa transação, mas o listener será configurado para agir depois do commit.
 
-- Guardrails de entrada.
-- Guardrails de saída.
-- Redução de custo evitando chamada desnecessária ao modelo.
-- Segurança além de prompt engineering.
+O efeito desejado é:
 
-## Desafio 6: criar uma base de conhecimento simples para RAG
+```text
+reserva salva + commit realizado
+  -> listener executa
 
-Agora adicione conhecimento que não deve ficar todo dentro do prompt. Exemplo: políticas da locadora.
+rollback da reserva
+  -> listener não executa
+```
 
-Arquivos prováveis:
+### 5.7 Testes desta etapa
 
-- `src/main/resources/knowledge/politica-combustivel.md`
-- `src/main/resources/knowledge/documentos.md`
-- `src/main/resources/knowledge/seguros.md`
-- Novo `knowledge/ingestion/DocumentIngestionService.java`
-- Novo `knowledge/retrieval/RagConfig.java`
+Atualize `ReservationServiceTest` para fornecer um mock de `ApplicationEventPublisher`.
 
-O que implementar:
+Teste o cenário de sucesso:
 
-- Criar arquivos `.md` com regras da locadora.
-- Carregar esses documentos na inicialização.
-- Quebrar documentos em segmentos.
-- Gerar embeddings.
-- Salvar em `InMemoryEmbeddingStore` no primeiro momento.
-- Configurar `ContentRetriever` no `AiServices`.
+- a reserva é salva;
+- o carro é marcado como reservado;
+- exatamente um `ReservationCreatedEvent` é publicado;
+- o evento contém os IDs e datas corretos.
 
-Critérios de aceite:
+Teste pelo menos um cenário de erro:
 
-- Perguntas sobre política de combustível usam os documentos.
-- Se a informação não existir nos documentos, o assistente diz que não sabe.
-- Você consegue explicar a diferença entre prompt fixo e contexto recuperado.
+- veículo indisponível ou cliente inexistente;
+- `reservationRepository.save(...)` não é chamado;
+- `eventPublisher.publishEvent(...)` não é chamado.
 
-Conceitos aprendidos:
+### 5.8 Critérios de aceite
 
-- RAG.
-- Document loading.
-- Splitting.
-- Embeddings.
-- `EmbeddingStore`.
-- `ContentRetriever`.
+- [ ] Existe um contrato imutável `ReservationCreatedEvent`.
+- [ ] O pacote do evento é exposto como `rental::events`.
+- [ ] O evento é publicado apenas depois de salvar a reserva.
+- [ ] Nenhuma entidade JPA ou CPF é carregado pelo evento.
+- [ ] Testes comprovam publicação no sucesso e ausência no erro.
+- [ ] `ModularityTest` continua passando.
 
-## Desafio 7: adicionar citação de fonte no RAG
+### 5.9 Erros comuns
 
-Depois que o RAG básico funcionar, adicione metadados nos segmentos.
+- Publicar o evento antes de salvar e não possuir `reservationId`.
+- Enviar a entidade inteira por conveniência.
+- Usar evento para consultar o cliente ou decidir disponibilidade.
+- Publicar o mesmo evento em mais de um ponto do fluxo.
+- Testar apenas se o método terminou sem exceção.
 
-O que implementar:
+---
 
-- Cada documento deve ter `source`, `title` e `category`.
-- A resposta deve mencionar a fonte usada quando responder com base nos documentos.
+## 6. Desafio: criar o módulo `notification`
 
-Critérios de aceite:
+### 6.1 Objetivo
 
-- Uma resposta sobre seguro informa algo como `Fonte: seguros.md`.
-- Segmentos recuperados têm metadados.
-- O modelo é instruído a não inventar fonte.
+Agora será criado um consumidor para provar o desacoplamento. O módulo `rental` não deve conhecer `notification`. A direção da dependência é do consumidor para o contrato do produtor:
 
-Conceitos aprendidos:
+```text
+notification -> rental::events
+```
 
-- Metadata em RAG.
-- Rastreabilidade.
-- Redução de alucinação.
+### 6.2 Estrutura sugerida
 
-## Desafio 8: trocar `InMemoryEmbeddingStore` por pgvector
+```text
+src/main/java/com/br/langchain4j/notification/
+├── application/
+│   └── ReservationNotificationListener.java
+└── package-info.java
+```
 
-`InMemoryEmbeddingStore` é ótimo para aprender, mas perde dados ao reiniciar. Use PostgreSQL com pgvector como segundo passo.
+Declare a dependência permitida:
 
-Arquivos prováveis:
+```java
+@org.springframework.modulith.ApplicationModule(
+        allowedDependencies = "rental::events"
+)
+package com.br.langchain4j.notification;
+```
 
-- `docker-compose.yml`
-- `knowledge/config/VectorStoreConfig.java`
-- `application.yaml`
+### 6.3 Criar o listener
 
-O que implementar:
+Na primeira versão, o listener pode apenas registrar uma confirmação controlada:
 
-- Subir PostgreSQL com extensão pgvector.
-- Configurar `PgVectorEmbeddingStore`.
-- Validar a dimensão do embedding model.
-- Criar health check simples para busca vetorial.
+```java
+@Component
+class ReservationNotificationListener {
 
-Critérios de aceite:
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    void on(ReservationCreatedEvent event) {
+        // Registrar confirmação sem dados pessoais.
+    }
+}
+```
 
-- Os documentos continuam pesquisáveis após reiniciar a aplicação.
-- A dimensão configurada no store bate com a dimensão do embedding model.
-- Uma query de teste retorna pelo menos um resultado relevante.
+Não envie e-mail real nesta etapa. Primeiro prove o fluxo e os limites arquiteturais. Depois você poderá criar uma interface `NotificationGateway` e implementações para e-mail, WhatsApp ou uma simulação local.
 
-Conceitos aprendidos:
+### 6.4 Por que usar `AFTER_COMMIT`
 
-- Vector store persistente.
-- Dimensão de embeddings.
-- Índices vetoriais.
-- Health check de infraestrutura de IA.
+Se o banco rejeitar a transação, não existe reserva válida para confirmar. `AFTER_COMMIT` impede o listener de agir quando ocorre rollback.
 
-## Desafio 9: testar sem depender de API real
+O cliente não deve perder a reserva somente porque uma confirmação secundária falhou. Entretanto, `@TransactionalEventListener` continua síncrono por padrão: ele protege a ordem transacional, mas o listener ainda ocupa a thread da requisição. Nesta primeira versão isso é aceitável porque o listener apenas registra a confirmação.
 
-Testes de unidade não devem chamar Gemini. Separe testes rápidos de testes de integração.
+Quando houver envio de e-mail ou outra integração lenta, estude `@ApplicationModuleListener` ou execução assíncrona com um executor configurado. Nesse caso, trate falhas, retentativas e idempotência explicitamente.
 
-Arquivos prováveis:
+### 6.5 Testes desta etapa
 
-- `src/test/java/.../QuotationServiceTest.java`
-- `src/test/java/.../AssistantGuardrailServiceTest.java`
-- `src/test/java/.../AssistantToolsTest.java`
-- Perfil `test`
+Crie um teste de integração que:
 
-O que implementar:
+1. inicia o contexto Spring;
+2. cria uma reserva válida;
+3. confirma que `ReservationCreatedEvent` foi publicado;
+4. confirma que o listener recebeu o evento após a transação;
+5. verifica que o módulo não acessa classes internas de `rental`.
 
-- Testar domínio sem Spring.
-- Testar guardrails sem LLM.
-- Testar tools diretamente.
-- Criar um teste de integração separado para o fluxo completo, marcado de forma que rode só quando uma variável de ambiente estiver presente.
+O Spring Modulith fornece `@ApplicationModuleTest` e suporte a cenários de eventos. Use-os quando o teste precisar verificar a interação entre módulos. Continue usando Mockito nos testes unitários do serviço.
 
-Critérios de aceite:
+### 6.6 Critérios de aceite
 
-- `./mvnw test` roda sem chave de API.
-- Testes de integração com modelo real ficam opt-in.
-- Erros de tool têm cobertura.
+- [ ] O módulo `notification` depende somente de `rental::events`.
+- [ ] O listener executa depois do commit.
+- [ ] Um rollback não produz confirmação.
+- [ ] A confirmação não recebe CPF nem entidade JPA.
+- [ ] O fluxo possui teste de integração.
+- [ ] O diagrama PlantUML mostra o novo módulo.
 
-Conceitos aprendidos:
+---
 
-- Pirâmide de testes em aplicação com LLM.
-- Mock de modelo.
-- Testes determinísticos.
-- Separação entre unitário e integração.
+## 7. Desafio opcional: tornar eventos internos mais resilientes
 
-## Desafio 10: observar tool calls e decisões do assistente
+A primeira versão usa eventos em memória. Isso é suficiente para aprender e demonstrar um monólito modular, mas existe uma limitação: se o processo terminar entre o commit da reserva e o processamento assíncrono, uma ação secundária pode não ser concluída.
 
-Aplicação com LLM precisa de rastreabilidade. Adicione logs controlados.
+Quando esse risco se tornar importante, estude o registro de publicações de eventos do Spring Modulith com persistência JPA. A ideia é registrar publicações pendentes no mesmo banco e permitir reprocessamento.
 
-O que implementar:
+Faça isso somente depois de o fluxo simples estar testado. Não adicione resiliência sem antes possuir um caso de falha que justifique a complexidade.
 
-- Logar quando uma tool for chamada.
-- Logar categoria e dias normalizados, sem dados sensíveis.
-- Logar quando guardrail bloquear uma entrada.
-- Logar quando RAG recuperar documentos, incluindo `source` e score.
+Kafka continua fora do escopo. Persistir publicações internas não transforma o projeto em microserviços.
 
-Critérios de aceite:
+---
 
-- Dá para debugar por que uma resposta foi gerada.
-- Logs não mostram API key.
-- Logs não despejam prompt inteiro sem necessidade.
+# Fase 2 — Ciclo de vida real da reserva
 
-Conceitos aprendidos:
+## 8. Desafio: adicionar status à reserva
 
-- Observabilidade.
-- Auditoria de tool calling.
-- Debug de RAG.
+Hoje a existência da reserva representa implicitamente seu estado. Um backend real precisa distinguir etapas.
 
-## Desafio 11: criar uma tool com acesso a dados externos internos
+Comece com:
 
-Depois da cotação fixa, simule um repositório de veículos disponíveis.
+```text
+CREATED -> CONFIRMED -> COMPLETED
+    |          |
+    +----------+-> CANCELLED
+```
 
-Arquivos prováveis:
+Crie `ReservationStatus` e adicione o status à entidade. Use uma migration Flyway nova; nunca altere uma migration que já pode ter sido aplicada.
 
-- `rental/domain/Vehicle.java`
-- `rental/application/VehicleAvailabilityService.java`
-- `assistant/tools/VehicleAvailabilityTools.java`
+Arquivos previstos:
 
-O que implementar:
+```text
+rental/domain/enums/ReservationStatus.java
+rental/domain/Reservation.java
+db/migration/V10__add_status_to_reservation.sql
+```
 
-- Criar lista em memória de veículos por categoria.
-- Criar tool `checkAvailability`.
-- A tool deve receber categoria e período.
-- O modelo deve consultar disponibilidade antes de afirmar que há veículos.
+Não exponha um setter genérico como `setStatus`. Prefira métodos que expressem comportamento:
 
-Critérios de aceite:
+```java
+reservation.confirm();
+reservation.cancel();
+reservation.complete();
+```
 
-- Perguntas sobre disponibilidade chamam a nova tool.
-- Categoria inválida retorna erro amigável.
-- A tool não altera estado.
+Cada método deve validar a transição. Por exemplo, uma reserva cancelada não pode ser confirmada.
 
-Conceitos aprendidos:
+Eventos futuros:
 
-- Múltiplas tools.
-- Tool read-only.
-- Separação entre cálculo e consulta.
+- `ReservationConfirmedEvent`;
+- `ReservationCancelledEvent`;
+- `ReservationCompletedEvent`.
 
-## Desafio 12: desenhar uma integração MCP conceitual
+### Critérios de aceite
 
-Não implemente MCP logo no início. Primeiro desenhe uma fronteira clara.
+- [ ] A reserva possui status persistido.
+- [ ] Transições inválidas são rejeitadas pelo domínio.
+- [ ] Cada transição relevante publica um evento depois da persistência.
+- [ ] Testes unitários cobrem a máquina de estados.
+- [ ] Flyway atualiza uma base existente sem apagar dados.
 
-Cenário sugerido:
+---
 
-- Um futuro MCP server expõe ferramentas internas da locadora, como disponibilidade, contratos, filiais e políticas.
+## 9. Desafio: disponibilidade por intervalo de datas
 
-O que documentar ou prototipar:
+Marcar um carro como `RESERVADO` de forma permanente é suficiente para o primeiro exercício, mas não representa uma locadora real. Um carro reservado para agosto ainda pode estar disponível em setembro.
 
-- Quais tools seriam expostas.
-- Quais seriam read-only.
-- Quais teriam efeito colateral.
-- Como filtrar tools perigosas.
-- Como aplicar timeout.
-- Como registrar falhas sem expor dados sensíveis.
+A disponibilidade deve considerar sobreposição de períodos.
 
-Critérios de aceite:
+Duas reservas se sobrepõem quando:
 
-- Existe uma tabela com nome da tool, entrada, saída, risco e permissão.
-- Tools administrativas ficam fora do assistente público.
-- Você sabe explicar por que MCP é uma fronteira de confiança.
+```text
+reservaExistente.inicio < periodoSolicitado.fim
+e
+reservaExistente.fim > periodoSolicitado.inicio
+```
 
-Conceitos aprendidos:
+Implemente uma consulta no `ReservationRepository` que procure reservas ativas para o carro e período solicitados. Reservas `CANCELLED` não devem bloquear o veículo.
 
-- MCP.
-- Tool provider.
-- Segurança em integrações externas.
-- Allowlist de capacidades.
+Altere a tool de disponibilidade para receber:
 
-## Ordem recomendada
+- categoria ou modelo;
+- data de retirada;
+- data de devolução.
 
-Siga nesta ordem:
+### Concorrência
 
-1. Java e segredo em configuração.
-2. Tool de cotação com validação.
-3. Separação de domínio.
-4. Contrato HTTP.
-5. Memória de conversa.
-6. Guardrails.
-7. RAG com `InMemoryEmbeddingStore`.
-8. Citação de fonte.
-9. Testes sem API real.
-10. pgvector.
-11. Observabilidade.
-12. MCP conceitual.
+Existe um risco importante: duas requisições podem consultar o mesmo carro ao mesmo tempo, ambas enxergarem disponibilidade e criarem reservas conflitantes.
 
-Essa ordem evita pular direto para RAG e vector store antes de ter base de arquitetura, testes e validação.
+Primeira solução recomendada:
 
-## Checklist de aprendizado
+1. abrir transação;
+2. bloquear ou reler o veículo com lock apropriado;
+3. consultar sobreposição dentro da transação;
+4. salvar somente se ainda estiver disponível.
 
-Ao final da trilha, você deve conseguir explicar:
+Não tente resolver concorrência apenas com um `if` em memória.
 
-- O que é um `AiService` no LangChain4j.
-- Quando usar `@SystemMessage`, `@UserMessage` e `@MemoryId`.
-- Como uma `@Tool` é escolhida e chamada pelo modelo.
-- Por que validação dentro da tool é obrigatória.
-- O que é RAG e por que ele não é apenas "colocar texto no prompt".
-- O que são embeddings e vector stores.
-- Por que `InMemoryEmbeddingStore` é bom para estudo e ruim para produção.
-- Como testar regras de negócio sem chamar uma LLM.
-- Como separar teste unitário, integração e end-to-end.
-- Por que guardrails no código são diferentes de instruções no prompt.
-- Por que MCP precisa de allowlist, timeout e controle de permissão.
+### Critérios de aceite
 
-## Sugestão de meta final
+- [ ] Um carro pode ser reservado em períodos diferentes.
+- [ ] Períodos sobrepostos são rejeitados.
+- [ ] Reserva cancelada libera o período.
+- [ ] Datas inválidas são rejeitadas antes da consulta.
+- [ ] Existe teste de concorrência ou integração do conflito.
 
-Ao terminar, o projeto pode virar um assistente de locadora corporativa com:
+---
 
-- Cotação validada por tool.
-- Consulta de disponibilidade por tool.
-- Memória por sessão.
-- RAG sobre políticas internas.
-- Fonte citada nas respostas.
-- Guardrails de entrada e saída.
-- Testes unitários sem LLM.
-- Integração opcional com modelo real.
-- Vector store persistente.
-- Desenho preparado para MCP.
+## 10. Desafio: guardar o preço contratado
+
+O valor de uma categoria pode mudar no futuro. Uma reserva antiga não deve mudar de preço quando a tabela atual for atualizada.
+
+Ao criar a reserva, calcule e salve um snapshot:
+
+- quantidade de diárias;
+- valor da diária;
+- valor do seguro;
+- valor total;
+- moeda.
+
+Esse snapshot pertence à reserva. O `QuotationService` continua calculando, mas o resultado contratado é persistido.
+
+### Critérios de aceite
+
+- [ ] Alterar a categoria não modifica reservas antigas.
+- [ ] A resposta da reserva mostra o valor contratado.
+- [ ] O cálculo usa um tipo monetário adequado, como `BigDecimal`.
+- [ ] Testes cobrem arredondamento e quantidade de dias.
+
+---
+
+# Fase 3 — API tradicional e IA como canais equivalentes
+
+## 11. Desafio: criar endpoints REST de negócio
+
+O backend não deve depender exclusivamente do modelo de linguagem. Crie controllers tradicionais que chamem os mesmos casos de uso usados pelas tools.
+
+Endpoints iniciais sugeridos:
+
+```text
+POST   /api/customers
+GET    /api/customers/{id}
+GET    /api/vehicles/available?start=...&end=...&category=...
+POST   /api/reservations
+GET    /api/reservations/{id}
+POST   /api/reservations/{id}/cancel
+```
+
+Regra de reutilização:
+
+```text
+Controller REST -> ReservationUseCase
+Tool da IA      -> ReservationUseCase
+```
+
+Nunca faça a tool chamar o controller e nunca duplique a regra dentro da tool.
+
+### Critérios de aceite
+
+- [ ] REST e IA utilizam os mesmos casos de uso.
+- [ ] Controllers não contêm regra de negócio.
+- [ ] Entidades JPA não são retornadas pela API.
+- [ ] Validação HTTP usa DTOs e Bean Validation.
+- [ ] Erros possuem respostas consistentes.
+
+---
+
+## 12. Desafio: autenticação e autorização
+
+Depois que os endpoints existirem, proteja operações sensíveis.
+
+Perfis iniciais:
+
+- `CUSTOMER`: consulta e cancela as próprias reservas;
+- `ATTENDANT`: cria e consulta reservas durante atendimento;
+- `ADMIN`: administra frota, categorias e políticas.
+
+Não use o `sessionId` da conversa como identidade autenticada. Ele identifica memória de chat, não prova quem é o usuário.
+
+Use Spring Security com autenticação stateless. Mantenha autorização também nos casos de uso quando ela representar regra de negócio, e não apenas no controller.
+
+### Critérios de aceite
+
+- [ ] Endpoints privados exigem autenticação.
+- [ ] Um cliente não acessa reserva de outro cliente.
+- [ ] Tools com efeito colateral possuem contexto de identidade confiável.
+- [ ] Logs não exibem token, senha ou CPF completo.
+
+---
+
+# Fase 4 — Qualidade, observabilidade e segurança da IA
+
+## 13. Desafio: completar a pirâmide de testes
+
+Organize os testes em três níveis.
+
+### Testes unitários
+
+Sem Spring, banco ou LLM:
+
+- cálculo de cotação;
+- transições da reserva;
+- validação de períodos;
+- guardrails;
+- adapters das tools com dependências mockadas.
+
+### Testes de módulo e integração
+
+Com Spring e infraestrutura controlada:
+
+- repositories com PostgreSQL/Testcontainers;
+- migrations Flyway;
+- publicação e consumo de eventos;
+- isolamento dos módulos;
+- endpoint HTTP com modelo de IA substituído por fake.
+
+### Testes end-to-end opcionais
+
+Podem usar Ollama ou Gemini, mas devem ser opt-in. O comando padrão `./mvnw test` precisa funcionar sem rede, chave ou modelo local.
+
+### Critérios de aceite
+
+- [ ] `./mvnw test` não chama APIs externas.
+- [ ] Testes de modelo real são identificados e opcionais.
+- [ ] Eventos possuem testes de sucesso, erro e rollback.
+- [ ] Banco real é validado com Testcontainers onde necessário.
+
+---
+
+## 14. Desafio: observabilidade do fluxo completo
+
+Uma resposta de IA pode envolver memória, RAG e várias tools. Sem observabilidade fica difícil explicar por que a resposta foi produzida.
+
+Registre de forma estruturada:
+
+- `sessionId` ou correlation ID;
+- duração da chamada ao modelo;
+- nome da tool chamada;
+- sucesso ou erro da tool;
+- fontes recuperadas pelo RAG;
+- bloqueios de guardrail;
+- tipo do evento publicado e processado;
+- tempo total da requisição.
+
+Não registre:
+
+- API keys;
+- tokens de autenticação;
+- prompt completo por padrão;
+- CPF completo;
+- conteúdo pessoal desnecessário.
+
+Adicione métricas com Actuator/Micrometer somente depois de definir quais perguntas elas responderão, por exemplo:
+
+- quantas reservas foram concluídas pela IA;
+- quantas mensagens foram bloqueadas;
+- quantas tools falharam;
+- quanto tempo uma resposta demora;
+- quantos eventos de notificação falharam.
+
+---
+
+## 15. Desafio: tornar tools com efeito colateral seguras
+
+Criar ou cancelar uma reserva é diferente de consultar uma política. A primeira operação altera estado.
+
+Para tools de escrita:
+
+1. valide todos os parâmetros no backend;
+2. não confie em texto produzido pelo modelo;
+3. use idempotência para evitar repetição;
+4. peça confirmação explícita do usuário antes da operação final;
+5. registre auditoria sem dados sensíveis;
+6. retorne um resultado estruturado.
+
+O `sessionId` pode ajudar na idempotência da conversa, mas não deve ser a única garantia de negócio. Considere uma chave específica da operação.
+
+### Critérios de aceite
+
+- [ ] Repetir a mesma chamada não cria reservas duplicadas.
+- [ ] O usuário confirma os dados antes da criação.
+- [ ] Datas, veículo e cliente são revalidados no servidor.
+- [ ] A tool retorna erro estruturado e compreensível.
+
+---
+
+# Fase 5 — Preparação para demonstração e LinkedIn
+
+## 16. Desafio: criar uma demonstração reproduzível
+
+Uma boa postagem precisa permitir que outra pessoa entenda o projeto rapidamente.
+
+Prepare um fluxo demonstrável:
+
+1. subir PostgreSQL/pgvector com Docker Compose;
+2. iniciar Ollama;
+3. iniciar a aplicação;
+4. cadastrar ou localizar um cliente pela conversa;
+5. consultar política da locadora usando RAG e mostrar a fonte;
+6. pedir cotação;
+7. consultar disponibilidade por período;
+8. confirmar a reserva;
+9. mostrar o evento de confirmação no log;
+10. consultar a reserva criada;
+11. exibir o diagrama dos módulos.
+
+Inclua no README:
+
+- visão geral;
+- arquitetura;
+- pré-requisitos;
+- comandos para execução;
+- exemplos de requisição;
+- variáveis de ambiente;
+- decisões arquiteturais;
+- limitações conhecidas.
+
+### História técnica sugerida para a postagem
+
+Explique o projeto nesta ordem:
+
+1. problema: atendimento e locação online de veículos;
+2. solução: IA integrada a um backend real, não um chatbot isolado;
+3. arquitetura: monólito modular com Spring Modulith;
+4. IA: LangChain4j, memória, guardrails, tools e RAG;
+5. dados: PostgreSQL, pgvector e Flyway;
+6. negócio: clientes, frota, cotação e reserva;
+7. eventos: confirmação desacoplada sem Kafka;
+8. qualidade: testes, limites de módulos e diagramas executáveis;
+9. próximos passos: segurança, disponibilidade concorrente e deploy.
+
+---
+
+# Fase 6 — O que deixar para depois
+
+## 17. Kafka
+
+Considere Kafka apenas se existirem processos independentes, grande volume de eventos, múltiplos consumidores externos ou necessidade real de retenção e replay distribuído.
+
+Não use Kafka apenas para dizer que o projeto é orientado a eventos.
+
+## 18. Microserviços
+
+O tamanho atual não justifica separar deploys, bancos e operações. Mantenha os módulos explícitos. Se um módulo ganhar necessidade operacional independente, seus contratos públicos e eventos facilitarão uma extração futura.
+
+## 19. MCP
+
+MCP pode ser estudado quando ferramentas vierem de sistemas externos ou precisarem ser compartilhadas com outros agentes. As tools locais já atendem o caso atual com menos complexidade.
+
+Antes de expor qualquer tool por MCP, defina:
+
+- autenticação;
+- autorização;
+- allowlist;
+- timeout;
+- idempotência;
+- auditoria;
+- proteção de dados pessoais.
+
+## 20. Frontend completo
+
+Um frontend melhora a apresentação, mas não deve interromper a consolidação das regras centrais. Primeiro torne criação, consulta, cancelamento e disponibilidade confiáveis por API.
+
+---
+
+# Ordem recomendada a partir de agora
+
+Siga esta sequência e conclua os critérios de aceite antes de avançar:
+
+1. Criar `ReservationCreatedEvent`.
+2. Testar publicação somente no sucesso.
+3. Criar o módulo `notification`.
+4. Testar consumo depois do commit.
+5. Executar `ModularityTest` e regenerar os diagramas.
+6. Adicionar ciclo de vida da reserva.
+7. Implementar disponibilidade por intervalo e proteção de concorrência.
+8. Persistir o preço contratado.
+9. Criar endpoints REST usando os mesmos casos de uso das tools.
+10. Adicionar autenticação e autorização.
+11. Completar testes de integração e observabilidade.
+12. Preparar Docker, README e roteiro de demonstração.
+
+## Próximo passo imediato
+
+O próximo passo é somente o primeiro item da lista:
+
+> Criar e testar `ReservationCreatedEvent` sem implementar e-mail, Kafka ou novos serviços externos.
+
+Quando ele estiver funcionando, execute:
+
+```bash
+./mvnw test
+./mvnw -Dtest=DocumentationTest test
+```
+
+Abra `target/spring-modulith-docs/components.puml` e confirme que a arquitetura continua coerente.
+
+## O que você deve saber explicar ao concluir esta trilha
+
+- por que a IA é um adapter e não o domínio;
+- como tools chamam casos de uso Java;
+- quando usar chamada síncrona e quando publicar evento;
+- por que eventos internos não exigem Kafka;
+- como o Spring Modulith protege os limites dos módulos;
+- como uma reserva mantém consistência transacional;
+- como impedir conflito entre períodos;
+- por que preços contratados precisam de snapshot;
+- como testar sem depender de uma LLM real;
+- como RAG, memória, guardrails e tools trabalham juntos;
+- como proteger tools que alteram estado;
+- quais sinais justificariam uma futura extração para microserviços.
+
+O objetivo final não é apenas ter um chatbot que responde perguntas. É demonstrar um backend modular de locadora, com regras reais de negócio, IA integrada de forma segura e uma arquitetura que você consegue defender tecnicamente.

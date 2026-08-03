@@ -3,6 +3,7 @@ package com.br.langchain4j.rental.application;
 import com.br.langchain4j.customer.api.CustomerUseCase;
 import com.br.langchain4j.customer.api.CustomerLookupResponse;
 import com.br.langchain4j.customer.api.CustomerResponse;
+import com.br.langchain4j.rental.api.event.ReservationCreatedEvent;
 import com.br.langchain4j.rental.domain.Car;
 import com.br.langchain4j.rental.domain.RentalCategory;
 import com.br.langchain4j.rental.domain.Reservation;
@@ -11,6 +12,8 @@ import com.br.langchain4j.rental.api.CreateReservationRequest;
 import com.br.langchain4j.rental.api.ReservationCompletedResponse;
 import com.br.langchain4j.rental.repository.ReservationRepository;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.context.ApplicationEventPublisher;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -20,9 +23,10 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -31,10 +35,12 @@ class ReservationServiceTest {
     private final ReservationRepository reservationRepository = mock(ReservationRepository.class);
     private final CarService carService = mock(CarService.class);
     private final CustomerUseCase customerUseCase = mock(CustomerUseCase.class);
+    private final ApplicationEventPublisher eventPublisher = mock(ApplicationEventPublisher.class);
     private final ReservationService reservationService = new ReservationService(
             reservationRepository,
             carService,
-            customerUseCase
+            customerUseCase,
+            eventPublisher
     );
 
     @Test
@@ -98,6 +104,7 @@ class ReservationServiceTest {
         assertThat(response.message()).isEqualTo("Cliente não encontrado");
         verify(carService, never()).checkAvailabilityByCarModel(anyString());
         verify(reservationRepository, never()).save(any());
+        verify(eventPublisher, never()).publishEvent(any(ReservationCreatedEvent.class));
     }
 
     @Test
@@ -114,29 +121,53 @@ class ReservationServiceTest {
         assertThat(response.success()).isFalse();
         assertThat(response.message()).isEqualTo("Veículo se encontra indisponível no momento");
         verify(reservationRepository, never()).save(any());
+        verify(eventPublisher, never()).publishEvent(any(ReservationCreatedEvent.class));
     }
 
     @Test
     void shouldCreateReservationAndMarkCarAsReserved() {
         UUID sessionId = UUID.randomUUID();
         UUID customerId = UUID.randomUUID();
-        Car car = car();
+        UUID reservationId = UUID.randomUUID();
+        UUID carId = UUID.randomUUID();
+        CreateReservationRequest request = request(sessionId);
+        Car car = spy(car());
+        Reservation savedReservation = mock(Reservation.class);
 
+        when(car.getId()).thenReturn(carId);
         when(carService.findCarByModel("Onix")).thenReturn(car);
-        when(reservationRepository.findBySessionIdAndCarId(sessionId, null)).thenReturn(Optional.empty());
+        when(reservationRepository.findBySessionIdAndCarId(sessionId, carId)).thenReturn(Optional.empty());
         when(customerUseCase.findByDocument("123.456.789-00")).thenReturn(foundCustomer(customerId));
         when(carService.checkAvailabilityByCarModel("Onix")).thenReturn(true);
         when(customerUseCase.findById(customerId)).thenReturn(foundCustomer(customerId));
-        when(reservationRepository.save(any(Reservation.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(savedReservation.getId()).thenReturn(reservationId);
+        when(savedReservation.getCustomerId()).thenReturn(customerId);
+        when(savedReservation.getCar()).thenReturn(car);
+        when(savedReservation.getStartDate()).thenReturn(request.startDate());
+        when(savedReservation.getEndDate()).thenReturn(request.finishDate());
+        when(reservationRepository.save(any(Reservation.class))).thenReturn(savedReservation);
 
-        ReservationCompletedResponse response = reservationService.createReservation(request(sessionId));
+        ReservationCompletedResponse response = reservationService.createReservation(request);
 
         assertThat(response.success()).isTrue();
         assertThat(response.message()).isEqualTo("Reserva realizada com sucesso");
         assertThat(response.reservation().carModel()).isEqualTo("Onix");
         assertThat(response.reservation().customerDocument()).isEqualTo("12345678900");
         assertThat(car.getStatus()).isEqualTo(StatusVeichleEnum.RESERVADO);
-        verify(reservationRepository).save(any(Reservation.class));
+        verify(reservationRepository, times(1)).save(any(Reservation.class));
+
+        ArgumentCaptor<ReservationCreatedEvent> eventCaptor =
+                ArgumentCaptor.forClass(ReservationCreatedEvent.class);
+
+        verify(eventPublisher, times(1)).publishEvent(eventCaptor.capture());
+
+        assertThat(eventCaptor.getValue()).isEqualTo(new ReservationCreatedEvent(
+                reservationId,
+                customerId,
+                carId,
+                request.startDate(),
+                request.finishDate()
+        ));
     }
 
     private CreateReservationRequest request(UUID sessionId) {
