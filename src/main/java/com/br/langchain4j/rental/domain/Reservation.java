@@ -1,7 +1,10 @@
 package com.br.langchain4j.rental.domain;
 
+import com.br.langchain4j.rental.domain.enums.ReservationStatusEnum;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -18,12 +21,13 @@ public class Reservation {
 
     public Reservation(){}
 
-    public Reservation(Car car, UUID customerId, UUID sessionId, LocalDateTime startDate, LocalDateTime endDate) {
+    public Reservation(Car car, UUID customerId, UUID sessionId, LocalDateTime startDate, LocalDateTime endDate, ReservationStatusEnum status) {
         this.car = car;
         this.customerId = customerId;
         this.sessionId = sessionId;
         this.startDate = startDate;
         this.endDate = endDate;
+        this.status = status;
     }
 
     @Id
@@ -45,6 +49,11 @@ public class Reservation {
 
     @Column(name = "end_date", nullable = false)
     private LocalDateTime endDate;
+
+    @Column(nullable = false)
+    @Enumerated(EnumType.STRING)
+    private ReservationStatusEnum status;
+
 
     public UUID getId() {
         return id;
@@ -88,5 +97,25 @@ public class Reservation {
 
     public void setEndDate(LocalDateTime endDate) {
         this.endDate = endDate;
+    }
+
+    public ReservationStatusEnum getStatus() {
+        return status;
+    }
+
+    public void cancel() {
+        if (status == ReservationStatusEnum.CANCELLED) {
+            throw new IllegalStateException("Reserva já está cancelada");
+        }
+
+        if (status == ReservationStatusEnum.COMPLETED) {
+            throw new IllegalStateException("Reserva concluída não pode ser cancelada");
+        }
+
+        if (status != ReservationStatusEnum.CREATED && status != ReservationStatusEnum.CONFIRMED) {
+            throw new IllegalStateException("Reserva não pode ser cancelada no status atual");
+        }
+
+        this.status = ReservationStatusEnum.CANCELLED;
     }
 }

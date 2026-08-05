@@ -65,8 +65,7 @@ public class KnowledgeIngestionService {
         document.metadata().put("category", docDefinition.category());
         document.metadata().put("content_hash", contentHash);
 
-        // O @Transactional garante atomicidade para as operacoes JDBC abaixo.
-        // Ao usar PgVector, valide se o store participa da mesma transacao do Spring.
+        // @Transactional para garantir atomicidade para as operacoes JDBC abaixo.
         int segments = documentIngestionService.ingest(document);
 
         knowledgeDocumentRepository.upsert(

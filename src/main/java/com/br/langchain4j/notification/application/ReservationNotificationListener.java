@@ -1,5 +1,6 @@
 package com.br.langchain4j.notification.application;
 
+import com.br.langchain4j.rental.api.event.ReservationCancelledEvent;
 import com.br.langchain4j.rental.api.event.ReservationCreatedEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,5 +16,10 @@ public class ReservationNotificationListener {
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     void on(ReservationCreatedEvent event) {
         logger.info("Reserva feita com o id: {}", event.reservationId());
+    }
+
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    void on(ReservationCancelledEvent event) {
+        logger.info("Reserva cancelada com o id: {}", event.reservationId());
     }
 }

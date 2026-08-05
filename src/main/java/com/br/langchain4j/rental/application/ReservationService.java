@@ -3,13 +3,17 @@ package com.br.langchain4j.rental.application;
 import com.br.langchain4j.customer.api.CustomerUseCase;
 import com.br.langchain4j.customer.api.CustomerLookupResponse;
 import com.br.langchain4j.customer.api.CustomerResponse;
+import com.br.langchain4j.rental.api.CancelReservationRequest;
+import com.br.langchain4j.rental.api.ReservationCancelledResponse;
 import com.br.langchain4j.rental.api.ReservationUseCase;
+import com.br.langchain4j.rental.api.event.ReservationCancelledEvent;
 import com.br.langchain4j.rental.api.event.ReservationCreatedEvent;
 import com.br.langchain4j.rental.domain.Car;
 import com.br.langchain4j.rental.domain.Reservation;
 import com.br.langchain4j.rental.api.CreateReservationRequest;
-import com.br.langchain4j.rental.api.ReservationCompletedResponse;
+import com.br.langchain4j.rental.api.ReservationCreatedResponse;
 import com.br.langchain4j.rental.api.ReservationResponse;
+import com.br.langchain4j.rental.domain.enums.ReservationStatusEnum;
 import com.br.langchain4j.rental.domain.enums.StatusVeichleEnum;
 import com.br.langchain4j.rental.repository.ReservationRepository;
 import org.springframework.context.ApplicationEventPublisher;
@@ -17,6 +21,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Optional;
+import java.util.Objects;
 import java.util.UUID;
 
 @Service
@@ -31,7 +36,8 @@ public class ReservationService implements ReservationUseCase {
     public ReservationService(
             ReservationRepository reservationRepository,
             CarService carService,
-            CustomerUseCase customerUseCase, ApplicationEventPublisher eventPublisher
+            CustomerUseCase customerUseCase,
+            ApplicationEventPublisher eventPublisher
     ) {
         this.reservationRepository = reservationRepository;
         this.carService = carService;
@@ -39,10 +45,10 @@ public class ReservationService implements ReservationUseCase {
         this.eventPublisher = eventPublisher;
     }
 
-    public ReservationCompletedResponse findByCustomerDocument(String document) {
+    public ReservationCreatedResponse findByCustomerDocument(String document) {
 
         if (document == null || document.isBlank()) {
-            return new ReservationCompletedResponse(
+            return new ReservationCreatedResponse(
                     false,
                     null,
                     "CPF do cliente é obrigatório para consultar a reserva"
@@ -52,7 +58,7 @@ public class ReservationService implements ReservationUseCase {
         CustomerLookupResponse customerResponse = customerUseCase.findByDocument(document);
 
         if (!customerResponse.found() || customerResponse.customer() == null) {
-            return new ReservationCompletedResponse(
+            return new ReservationCreatedResponse(
                     false,
                     null,
                     customerResponse.message()
@@ -61,11 +67,11 @@ public class ReservationService implements ReservationUseCase {
 
         Optional<Reservation> reservation = reservationRepository.findByCustomerId(customerResponse.customer().id());
 
-        return reservation.map(value -> new ReservationCompletedResponse(
+        return reservation.map(value -> new ReservationCreatedResponse(
                 true,
                 toResponse(value),
                 "Reserva encontrada"
-        )).orElseGet(() -> new ReservationCompletedResponse(
+        )).orElseGet(() -> new ReservationCreatedResponse(
                 false,
                 null,
                 "Reserva não encontrada"
@@ -74,10 +80,10 @@ public class ReservationService implements ReservationUseCase {
     }
 
     @Transactional
-    public ReservationCompletedResponse createReservation(CreateReservationRequest reservationRequest) {
+    public ReservationCreatedResponse createReservation(CreateReservationRequest reservationRequest) {
 
         if (isInvalidRequest(reservationRequest)) {
-            return new ReservationCompletedResponse(
+            return new ReservationCreatedResponse(
                     false,
                     null,
                     "Dados da reserva são obrigatórios"
@@ -87,7 +93,7 @@ public class ReservationService implements ReservationUseCase {
         var reservationOp = findReservationBySessionIdAndCarModelOptional(reservationRequest.sessionId(), reservationRequest.carModel());
 
         if (reservationOp.isPresent()) {
-            return new ReservationCompletedResponse(
+            return new ReservationCreatedResponse(
                     true,
                     toResponse(reservationOp.get()),
                     "Reserva já existe para esta sessão e veículo"
@@ -96,7 +102,7 @@ public class ReservationService implements ReservationUseCase {
 
         if (reservationRequest.finishDate().isBefore(reservationRequest.startDate())
                 || reservationRequest.finishDate().isEqual(reservationRequest.startDate())) {
-            return new ReservationCompletedResponse(
+            return new ReservationCreatedResponse(
                     false,
                     null,
                     "Data de entrega deve ser posterior à data de retirada"
@@ -106,7 +112,7 @@ public class ReservationService implements ReservationUseCase {
         CustomerLookupResponse customerLookup = customerUseCase.findByDocument(reservationRequest.document());
 
         if (!customerLookup.found()) {
-            return new ReservationCompletedResponse(
+            return new ReservationCreatedResponse(
                     false,
                     null,
                     customerLookup.message()
@@ -116,7 +122,7 @@ public class ReservationService implements ReservationUseCase {
         CustomerResponse customer = customerLookup.customer();
 
         if (!carService.checkAvailabilityByCarModel(reservationRequest.carModel())) {
-            return new ReservationCompletedResponse(
+            return new ReservationCreatedResponse(
                     false,
                     null,
                     "Veículo se encontra indisponível no momento"
@@ -131,7 +137,8 @@ public class ReservationService implements ReservationUseCase {
                 customer.id(),
                 reservationRequest.sessionId(),
                 reservationRequest.startDate(),
-                reservationRequest.finishDate()
+                reservationRequest.finishDate(),
+                ReservationStatusEnum.CREATED
         );
 
         Reservation savedReservation = reservationRepository.save(reservation);
@@ -144,10 +151,61 @@ public class ReservationService implements ReservationUseCase {
                 savedReservation.getEndDate()
         ));
 
-        return new ReservationCompletedResponse(
+        return new ReservationCreatedResponse(
                 true,
                 toResponse(savedReservation),
-                "Reserva realizada com sucesso"
+                "Reserva criada com sucesso"
+        );
+    }
+
+    @Override
+    @Transactional
+    public ReservationCancelledResponse cancelReservation(CancelReservationRequest request) {
+        if (isInvalidRequest(request)) {
+            return cancellationFailure(null, "Dados para cancelamento são obrigatórios");
+        }
+
+        CustomerLookupResponse customerLookup = customerUseCase.findByDocument(request.document());
+
+        if (!customerLookup.found() || customerLookup.customer() == null) {
+            return cancellationFailure(request.reservationId(), customerLookup.message());
+        }
+
+        Optional<Reservation> reservationOptional = reservationRepository.findById(request.reservationId());
+
+        if (reservationOptional.isEmpty()) {
+            return cancellationFailure(request.reservationId(), "Reserva não encontrada");
+        }
+
+        Reservation reservation = reservationOptional.get();
+        UUID customerId = customerLookup.customer().id();
+
+        if (!Objects.equals(reservation.getCustomerId(), customerId)) {
+            return cancellationFailure(request.reservationId(), "Reserva não pertence ao cliente informado");
+        }
+
+        try {
+            reservation.cancel();
+        } catch (IllegalStateException exception) {
+            return cancellationFailure(request.reservationId(), exception.getMessage());
+        }
+
+        Car car = reservation.getCar();
+        car.setStatus(StatusVeichleEnum.DISPONIVEL);
+
+        reservationRepository.save(reservation);
+
+        eventPublisher.publishEvent(new ReservationCancelledEvent(
+                reservation.getId(),
+                reservation.getCustomerId(),
+                car.getId()
+        ));
+
+        return new ReservationCancelledResponse(
+                true,
+                reservation.getId(),
+                reservation.getStatus().name(),
+                "Reserva cancelada com sucesso"
         );
     }
 
@@ -165,6 +223,8 @@ public class ReservationService implements ReservationUseCase {
 
         if (!customerLookup.found() || customer == null) {
             return new ReservationResponse(
+                reservation.getId(),
+                reservation.getStatus().name(),
                 reservation.getCar().getModel(),
                 reservation.getCar().getCategory().getCode(),
                 reservation.getCar().getPlate(),
@@ -177,6 +237,8 @@ public class ReservationService implements ReservationUseCase {
         }
 
         return new ReservationResponse(
+            reservation.getId(),
+            reservation.getStatus().name(),
             reservation.getCar().getModel(),
             reservation.getCar().getCategory().getCode(),
             reservation.getCar().getPlate(),
@@ -188,6 +250,10 @@ public class ReservationService implements ReservationUseCase {
         );
     }
 
+    private ReservationCancelledResponse cancellationFailure(UUID reservationId, String message) {
+        return new ReservationCancelledResponse(false, reservationId, null, message);
+    }
+
     private boolean isInvalidRequest(CreateReservationRequest reservationRequest) {
         return reservationRequest == null
                 || reservationRequest.sessionId() == null
@@ -197,5 +263,12 @@ public class ReservationService implements ReservationUseCase {
                 || reservationRequest.finishDate() == null
                 || reservationRequest.carModel() == null
                 || reservationRequest.carModel().isBlank();
+    }
+
+    private boolean isInvalidRequest(CancelReservationRequest request) {
+        return request == null
+                || request.reservationId() == null
+                || request.document() == null
+                || request.document().isBlank();
     }
 }
