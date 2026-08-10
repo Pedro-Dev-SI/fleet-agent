@@ -1,241 +1,242 @@
 # Fleet Agent
 
-Projeto de estudo com Spring Boot e LangChain4j para construir um assistente de locadora corporativa de veículos.
+Backend de uma locadora de veículos com um assistente de IA capaz de conduzir atendimentos, consultar dados e executar casos de uso reais da aplicação.
 
-O objetivo do projeto e aprender, de forma incremental, como integrar uma LLM em uma aplicacao Java usando:
+O projeto nasceu como estudo de integração entre Java e modelos de linguagem, mas evoluiu para um **monólito modular** com regras de negócio, persistência, RAG, tool calling, eventos internos e testes de arquitetura.
 
-- AI Services do LangChain4j.
-- Tool calling.
-- Memoria de conversa por sessao.
-- Guardrails de entrada e saida.
-- RAG com documentos `.md`.
-- Embeddings com Ollama.
-- PostgreSQL com pgvector.
-- Versionamento de documentos indexados.
-- Health check do RAG.
+> Projeto de aprendizado e portfólio. A aplicação demonstra decisões e integrações reais, mas ainda possui evoluções planejadas antes de um uso em produção.
 
-## Stack
+## O que o assistente faz
 
-- Java 25
-- Spring Boot 3.5
-- Maven
-- LangChain4j
-- Ollama
-- Gemini opcional
-- PostgreSQL 17 com pgvector
-- Flyway
-- Spring Data JPA
-- Spring Actuator
+Por meio de uma única API conversacional, o assistente consegue:
 
-## Visao Geral
+- responder dúvidas sobre documentos, pagamentos, combustível, seguros e processo de locação;
+- calcular cotações por categoria e quantidade de dias;
+- listar veículos disponíveis por categoria;
+- localizar ou cadastrar clientes;
+- criar reservas vinculadas ao cliente, veículo e sessão da conversa;
+- consultar reservas pelo documento do cliente;
+- cancelar reservas e disponibilizar novamente o veículo;
+- manter o contexto das últimas mensagens por `sessionId`;
+- citar a fonte usada nas respostas baseadas na base de conhecimento;
+- bloquear solicitações fora do domínio e respostas inválidas com guardrails;
+- publicar eventos internos após a criação ou o cancelamento de uma reserva.
 
-O assistente responde perguntas sobre locacao corporativa de veiculos.
+As regras de negócio não ficam no prompt. A LLM interpreta a intenção e escolhe uma tool, enquanto os serviços Java validam e executam a operação.
 
-Ele consegue:
+## Arquitetura
 
-- Calcular cotacao usando uma tool Java.
-- Responder perguntas sobre politicas da locadora usando RAG.
-- Manter memoria por `sessionId`.
-- Bloquear perguntas fora do escopo com guardrails.
-- Citar fontes usadas na base de conhecimento.
-- Persistir embeddings em PostgreSQL com pgvector.
+O Fleet Agent é uma única aplicação Spring Boot organizada por capacidades de negócio. O Spring Modulith documenta os módulos, restringe suas dependências e verifica a ausência de ciclos.
 
-Fluxo simplificado:
+```mermaid
+flowchart LR
+    Client[Cliente] -->|POST /api/assistant| AI[ai]
+
+    AI -->|customer::api| Customer[customer]
+    AI -->|rental::api| Rental[rental]
+    Rental -->|customer::api| Customer
+    Rental -->|rental::events| Notification[notification]
+    Knowledge[knowledge] -. contexto RAG .-> AI
+
+    Customer --> DB[(PostgreSQL)]
+    Rental --> DB
+    Knowledge --> Vector[(PostgreSQL + pgvector)]
+```
+
+### Módulos
+
+| Módulo | Responsabilidade | Contratos e comunicação |
+|---|---|---|
+| `ai` | API conversacional, AI Service, modelos, memória, guardrails e tools | Consome apenas as interfaces públicas de `customer` e `rental` |
+| `customer` | Cadastro, consulta e regras do cliente | Expõe `customer::api` por uma `@NamedInterface` |
+| `rental` | Categorias, frota, cotação e ciclo de vida das reservas | Expõe `rental::api`, consome `customer::api` e publica eventos |
+| `knowledge` | Ingestão, versionamento e recuperação semântica dos documentos | Fornece a infraestrutura de RAG e permanece sem dependências de domínio |
+| `notification` | Reação a acontecimentos do módulo de locação | Consome `rental::events` após o commit da transação |
+
+Cada módulo mantém seus próprios pacotes de API, aplicação, domínio e persistência conforme a necessidade. Implementações internas não são usadas como contrato entre módulos.
+
+### Comunicação síncrona e por eventos
+
+Consultas e validações necessárias para concluir uma operação usam contratos Java síncronos. Por exemplo, uma reserva consulta o cliente por `customer::api` antes de ser criada.
+
+Efeitos posteriores usam eventos do Spring:
+
+```text
+Reserva criada/cancelada
+  -> transação confirmada
+  -> ReservationCreatedEvent ou ReservationCancelledEvent
+  -> ReservationNotificationListener (AFTER_COMMIT)
+```
+
+Esse fluxo mantém o núcleo da reserva desacoplado da notificação sem introduzir Kafka ou outra infraestrutura distribuída em um monólito.
+
+## Fluxo de uma conversa
 
 ```text
 Cliente
   -> POST /api/assistant
   -> AssistantAiController
   -> AssistantAiService
-  -> LangChain4j
-     -> Chat model
-     -> Tools
-     -> Memory
-     -> RAG
-  -> resposta
+     -> memória da sessão
+     -> guardrail de entrada
+     -> recuperação de contexto no RAG
+     -> modelo de chat (Ollama ou Gemini)
+     -> tool, quando necessária
+        -> contrato público do módulo
+        -> serviço de aplicação
+        -> domínio e banco de dados
+     -> guardrail de saída
+  -> resposta + sessionId
 ```
 
-## Arquitetura
+## Integração com IA
+
+### AI Service e memória
+
+O AI Service usa `@SystemMessage`, `@UserMessage` e `@MemoryId`. Quando a primeira requisição não contém uma sessão, a API gera um UUID e o devolve ao cliente.
+
+A memória é isolada por sessão e usa `MessageWindowChatMemory` com as dez mensagens mais recentes. Atualmente ela fica em memória e é perdida quando a aplicação reinicia.
+
+### Tool calling
+
+As tools são adaptadores entre a LLM e os contratos públicos da aplicação:
+
+| Grupo | Operações disponíveis |
+|---|---|
+| Atendimento | calcular cotação e listar veículos disponíveis |
+| Clientes | consultar cliente por documento e cadastrar cliente |
+| Reservas | criar, consultar e cancelar reserva |
+
+Na criação de reserva, o `@ToolMemoryId` injeta o identificador da conversa na operação. O backend continua responsável por validar datas, existência do cliente, disponibilidade do veículo, propriedade da reserva e transições de status.
+
+### Guardrails
+
+O guardrail de entrada bloqueia tentativas conhecidas de prompt injection e perguntas claramente fora do escopo. O guardrail de saída impede que uma resposta vazia seja devolvida ao cliente.
+
+Há testes isolados para entradas válidas, tentativas de manipulação, assuntos fora do domínio e respostas inválidas.
+
+## RAG e base de conhecimento
+
+Os documentos Markdown ficam em `src/main/resources/knowledge`:
+
+- `politica-combustivel.md`;
+- `politica-documentos.md`;
+- `politica-pagamentos.md`;
+- `politica-seguros.md`;
+- `processo-locacao.md`.
+
+Pipeline de ingestão:
 
 ```text
-io.github.pedrodevsi.fleetagent
-  ai
-    api             Controller e tratamento de erros HTTP
-    application     Interface do AI Service
-    config          Configuracao do chat model e AiServices
-    dto             Request/response da API
-    guardrail       Guardrails de entrada e saida
-    tools           Tools expostas para a LLM
-
-  rental
-    domain          Entidade RentalCategory
-    application     Regra de cotacao
-    repository      Repository JPA
-
-  knowledge
-    application     Orquestracao da ingestion dos documentos
-    config          Configuracao de RAG, embedding model e pgvector
-    dto             Definicao dos documentos conhecidos
-    infra           Repositories tecnicos e health check
-    ingestion       Split, embedding e carga inicial
-    utils           Hash dos documentos
+Documento Markdown
+  -> metadados e hash SHA-256
+  -> divisão recursiva em chunks de 300 caracteres
+  -> sobreposição de 30 caracteres
+  -> embeddings com nomic-embed-text
+  -> armazenamento no pgvector
 ```
 
-## Requisitos
+Pipeline de recuperação:
 
-Instale:
+```text
+Pergunta do cliente
+  -> embedding da consulta
+  -> busca por similaridade de cosseno
+  -> até 3 chunks com score mínimo de 0.65
+  -> contexto + source + title + category
+  -> resposta fundamentada com citação da fonte
+```
 
-- JDK 25
-- Docker e Docker Compose
-- Ollama
+O hash evita reindexar documentos que não mudaram. Quando o conteúdo é alterado, os embeddings antigos daquela fonte são removidos antes da nova ingestão.
 
-Verifique o Java:
+## Stack
+
+- Java 25;
+- Spring Boot 3.5;
+- Spring Modulith;
+- LangChain4j;
+- Ollama com `llama3.2` para chat local;
+- Google Gemini como provedor opcional;
+- Ollama com `nomic-embed-text` para embeddings;
+- PostgreSQL 17 com pgvector;
+- Spring Data JPA;
+- Flyway;
+- Spring Boot Actuator;
+- Maven;
+- JUnit 5, AssertJ e Mockito.
+
+## Executando localmente
+
+### Requisitos
+
+- JDK 25;
+- Docker e Docker Compose;
+- Ollama.
+
+Confirme a versão do Java:
 
 ```bash
 java -version
 ```
 
-O projeto esta configurado com:
-
-```xml
-<java.version>25</java.version>
-```
-
-## Configurando o Ollama
-
-O projeto usa Ollama por padrao para evitar custo durante os testes.
-
-Baixe o modelo de chat:
-
-```bash
-ollama pull llama3.2
-```
-
-Baixe o modelo de embedding:
-
-```bash
-ollama pull nomic-embed-text
-```
-
-Mantenha o Ollama rodando:
-
-```bash
-ollama serve
-```
-
-Se o Ollama ja estiver rodando como servico, esse comando pode nao ser necessario.
-
-## Subindo o PostgreSQL com pgvector
-
-O compose fica em:
-
-```text
-src/main/docker/docker-compose.yml
-```
-
-Suba o banco:
+### 1. Suba o PostgreSQL com pgvector
 
 ```bash
 docker compose -f src/main/docker/docker-compose.yml up -d
 ```
 
-O banco sobe em:
+Configuração padrão:
 
 ```text
-localhost:5433
-```
-
-Credenciais padrao:
-
-```text
+host: localhost
+port: 5433
 database: fleet_agent
 user: fleet_agent
 password: fleet_agent
 ```
 
-## Configuracao da Aplicacao
+Os dados ficam no volume Docker `fleet-agent-postgres-data`.
 
-As principais propriedades estao em:
-
-```text
-src/main/resources/application.yaml
-```
-
-Por padrao, o provider e Ollama:
-
-```yaml
-app:
-  ai:
-    provider: ${APP_AI_PROVIDER:ollama}
-```
-
-Configuracao do chat model local:
-
-```yaml
-ollama:
-  base-url: http://localhost:11434
-  model: llama3.2
-```
-
-Configuracao do embedding model:
-
-```yaml
-rag:
-  embedding:
-    base-url: ${RAG_EMBEDDING_BASE_URL:http://localhost:11434}
-    model: ${RAG_EMBEDDING_MODEL:nomic-embed-text}
-```
-
-Configuracao do pgvector:
-
-```yaml
-rag:
-  vector-store:
-    host: ${RAG_VECTOR_HOST:localhost}
-    port: ${RAG_VECTOR_PORT:5433}
-    database: ${RAG_VECTOR_DATABASE:fleet_agent}
-    user: ${RAG_VECTOR_USER:fleet_agent}
-    password: ${RAG_VECTOR_PASSWORD:fleet_agent}
-    table: ${RAG_VECTOR_TABLE:knowledge_embeddings}
-    dimension: ${RAG_VECTOR_DIMENSION:768}
-```
-
-### Usando Gemini
-
-Gemini e opcional.
-
-Para usar:
+### 2. Prepare os modelos locais
 
 ```bash
-export APP_AI_PROVIDER=gemini
-export GEMINI_API_KEY=sua-chave
+ollama pull llama3.2
+ollama pull nomic-embed-text
+ollama serve
 ```
 
-Depois rode a aplicacao normalmente.
+Se o Ollama já estiver rodando como serviço, o último comando não é necessário.
 
-Nenhuma chave real deve ser colocada no `application.yaml`.
-
-## Rodando a Aplicacao
-
-Com o PostgreSQL e Ollama rodando:
+### 3. Inicie a aplicação
 
 ```bash
 ./mvnw spring-boot:run
 ```
 
-Se precisar apontar explicitamente para o Java 25:
+Se for necessário apontar explicitamente para o JDK 25:
 
 ```bash
 JAVA_HOME=/home/youx/.sdkman/candidates/java/25.0.3-tem ./mvnw spring-boot:run
 ```
 
-## Endpoint Principal
+Na inicialização, o Flyway atualiza o schema e a base de conhecimento é ingerida apenas quando seus documentos são novos ou foram alterados.
 
-```text
-POST /api/assistant
+### Usando Gemini
+
+Ollama é o provider padrão. Para usar Gemini:
+
+```bash
+export APP_AI_PROVIDER=gemini
+export GEMINI_API_KEY=sua-chave
+export GEMINI_MODEL=gemini-3.1-flash-lite
+./mvnw spring-boot:run
 ```
 
-Exemplo:
+Nenhuma chave real deve ser adicionada ao `application.yaml` ou versionada no repositório.
+
+## API conversacional
+
+### Iniciar uma conversa
 
 ```bash
 curl -X POST http://localhost:8080/api/assistant \
@@ -245,7 +246,7 @@ curl -X POST http://localhost:8080/api/assistant \
   }'
 ```
 
-Resposta esperada:
+Resposta:
 
 ```json
 {
@@ -254,391 +255,195 @@ Resposta esperada:
 }
 ```
 
-Para continuar a mesma conversa, envie o `sessionId` retornado:
+### Continuar a mesma conversa
 
 ```bash
 curl -X POST http://localhost:8080/api/assistant \
   -H "Content-Type: application/json" \
   -d '{
     "sessionId": "cole-o-uuid-aqui",
-    "message": "E quais formas de pagamento sao aceitas?"
+    "message": "Quero ver os SUVs disponíveis"
   }'
 ```
 
-## Exemplos de Perguntas
+O campo `message` é obrigatório e aceita no máximo 1.000 caracteres.
 
-Cotacao usando tool:
+### Exemplos de jornadas
 
 ```text
 Quanto custa um SUV por 5 dias?
 ```
 
-RAG com fonte:
-
 ```text
-Quais documentos preciso apresentar?
+Quais veículos econômicos estão disponíveis?
 ```
 
 ```text
-Quais formas de pagamento sao aceitas?
+Quero fazer uma reserva.
 ```
 
 ```text
-Como funciona o processo de locacao?
+Consulte minha reserva pelo CPF 00000000000.
 ```
-
-## Health Check
-
-O projeto usa Spring Actuator.
-
-Endpoint:
 
 ```text
-GET /actuator/health
+Quero cancelar a reserva 00000000-0000-0000-0000-000000000000.
 ```
 
-Exemplo:
+O assistente solicita somente os dados que ainda faltam antes de chamar uma operação do backend.
 
-```bash
-curl http://localhost:8080/actuator/health
-```
+## Persistência e migrations
 
-Existe um health check customizado chamado `rag`.
+O Hibernate está configurado com `ddl-auto: validate`. A evolução do banco pertence exclusivamente ao Flyway.
 
-Ele executa uma busca real no RAG com a consulta:
+| Versão | Migration | Responsabilidade |
+|---|---|---|
+| V1 | `create_rental_category` | Cria categorias e preços base; insere econômico, SUV e premium |
+| V2 | `enable_pgvector` | Habilita a extensão `vector` |
+| V3 | `create_knowledge_embeddings` | Cria embeddings `vector(768)`, metadados e índice IVFFlat |
+| V4 | `create_knowledge_documents` | Controla fonte, categoria, hash e data de ingestão |
+| V5 | `create_car` | Cria a frota e sua relação com categorias |
+| V6 | `create_reservation` | Cria reservas relacionadas a veículo e sessão |
+| V7 | `insert_cars` | Insere a frota inicial das três categorias |
+| V8 | `create_customer` | Cria clientes com documento único |
+| V9 | `add_customer_to_reservation` | Relaciona reservas aos clientes |
+| V10 | `add_status_to_reservation` | Adiciona o estado da reserva |
 
-```text
-documentos obrigatorios para locacao
-```
+Uma migration aplicada não deve ser editada. Novas alterações de schema devem ser adicionadas em uma nova versão.
 
-Se recuperar chunks da base vetorial, retorna `UP`.
+## Testes e documentação da arquitetura
 
-Se o Ollama, pgvector, tabela ou ingestion estiverem com problema, retorna `DOWN`.
-
-## O Que Foi Implementado
-
-### 1. AI Service
-
-O arquivo:
-
-```text
-AssistantAiService.java
-```
-
-define o comportamento do assistente com `@SystemMessage`, `@UserMessage` e `@MemoryId`.
-
-`@MemoryId` separa a memoria por sessao. Duas conversas com `sessionId` diferente nao compartilham historico.
-
-### 2. Configuracao Manual do AiServices
-
-O arquivo:
-
-```text
-AssistantConfig.java
-```
-
-monta o AI Service manualmente:
-
-- chat model;
-- tools;
-- memoria;
-- retrieval augmentor;
-- guardrails.
-
-Isso deixa claro o que esta sendo conectado no LangChain4j.
-
-### 3. Tool Calling
-
-O arquivo:
-
-```text
-AssistantTools.java
-```
-
-expoe uma tool:
-
-```text
-calculateQuotation
-```
-
-Ela chama o `QuotationService`, que contem a regra de negocio da cotacao.
-
-A tool e apenas um adaptador entre a LLM e o dominio Java.
-
-### 4. Regra de Negocio Separada
-
-O calculo da cotacao fica em:
-
-```text
-QuotationService.java
-```
-
-Ele consulta categorias cadastradas no banco e calcula o valor da locacao.
-
-Isso evita colocar regra de negocio dentro da tool.
-
-### 5. Contrato HTTP com DTOs
-
-Request:
-
-```text
-AssistantRequest.java
-```
-
-Response:
-
-```text
-AssistantResponse.java
-```
-
-O request possui:
-
-- `message`
-- `sessionId`
-
-Se `sessionId` vier vazio, o controller gera um UUID novo.
-
-### 6. Guardrails
-
-Guardrails ficam em:
-
-```text
-RentalScopeInputGuardrail.java
-RentalScopeOutputGuardrail.java
-```
-
-Eles validam entrada e saida do modelo.
-
-Input guardrail:
-
-- bloqueia mensagens fora do dominio;
-- reduz chamadas desnecessarias ao modelo.
-
-Output guardrail:
-
-- evita resposta vazia ou nula.
-
-### 7. RAG
-
-Os documentos ficam em:
-
-```text
-src/main/resources/knowledge
-```
-
-Documentos atuais:
-
-- `politica-combustivel.md`
-- `politica-documentos.md`
-- `politica-pagamentos.md`
-- `politica-seguros.md`
-- `processo-locacao.md`
-
-O fluxo e:
-
-```text
-Document
-  -> split em chunks
-  -> embeddings
-  -> pgvector
-  -> busca semantica
-  -> contexto para IA
-```
-
-Chunk e um pedaco menor do documento.
-
-Embedding e a representacao numerica de um texto.
-
-Vector store e o lugar onde esses embeddings ficam salvos.
-
-### 8. Metadata e Citacao de Fonte
-
-Cada documento recebe metadados:
-
-```text
-source
-title
-category
-content_hash
-```
-
-O `DefaultContentInjector` injeta esses metadados no contexto enviado ao modelo.
-
-O system message instrui o modelo a citar fontes no formato:
-
-```text
-Fonte: nome-do-arquivo.md
-```
-
-### 9. pgvector
-
-O projeto usa:
-
-```text
-PgVectorEmbeddingStore
-```
-
-Tabela:
-
-```text
-knowledge_embeddings
-```
-
-Migration:
-
-```text
-V3__create_knowledge_embeddings.sql
-```
-
-O campo:
-
-```text
-embedding vector(768)
-```
-
-guarda o vetor gerado pelo modelo `nomic-embed-text`.
-
-### 10. Versionamento dos Documentos
-
-Para evitar duplicar embeddings ao reiniciar a aplicacao, existe controle por hash.
-
-Tabela:
-
-```text
-knowledge_documents
-```
-
-Migration:
-
-```text
-V4__create_knowledge_documents.sql
-```
-
-Fluxo:
-
-```text
-le documento
-calcula SHA-256 do conteudo
-verifica source + content_hash
-se ja existe, pula
-se mudou, remove embeddings antigos e reindexa
-```
-
-Isso evita que a mesma politica seja indexada varias vezes.
-
-### 11. Service de Ingestion
-
-O arquivo:
-
-```text
-KnowledgeIngestionService.java
-```
-
-coordena:
-
-- carregar documento;
-- calcular hash;
-- verificar se mudou;
-- remover embeddings antigos;
-- adicionar metadata;
-- ingerir documento;
-- atualizar controle em `knowledge_documents`.
-
-Ele usa `@Transactional` para coordenar as operacoes de banco feitas pelos repositories.
-
-### 12. Flyway
-
-Migrations:
-
-```text
-V1__create_rental_category.sql
-V2__enable_pgvector.sql
-V3__create_knowledge_embeddings.sql
-V4__create_knowledge_documents.sql
-```
-
-Flyway garante que a estrutura do banco seja criada de forma versionada.
-
-## Rodando Testes
+Execute a suíte:
 
 ```bash
 ./mvnw test
 ```
 
-Com Java especifico:
+Com um Java específico:
 
 ```bash
 JAVA_HOME=/home/youx/.sdkman/candidates/java/25.0.3-tem ./mvnw test
 ```
 
-## Problemas Comuns
+A suíte atual cobre:
 
-### Ollama nao esta rodando
+- regras de cotação;
+- criação, consulta e cancelamento de reservas;
+- efeitos esperados no veículo e no repositório;
+- publicação dos eventos de reserva;
+- cenários de erro sem persistência ou evento indevido;
+- guardrails de entrada e saída;
+- carregamento básico da aplicação;
+- limites arquiteturais do monólito modular.
 
-Erro comum:
+O teste de modularidade executa:
 
-```text
-Connection refused localhost:11434
+```java
+ApplicationModules.of(FleetAgentApplication.class).verify();
 ```
 
-Solucao:
+Para gerar os diagramas PlantUML dos módulos:
 
 ```bash
-ollama serve
+./mvnw -Dtest=DocumentationTest test
 ```
 
-### Modelo de embedding nao encontrado
+O `Documenter` do Spring Modulith grava o diagrama geral e os diagramas individuais em `target/spring-modulith-docs`.
 
-Solucao:
+## Health check
+
+```bash
+curl http://localhost:8080/actuator/health
+```
+
+Além dos indicadores padrão do Spring, o projeto possui o health indicator `rag`. Ele executa uma recuperação real na base vetorial e ajuda a detectar problemas no modelo de embeddings, pgvector, ingestão ou configuração do retriever.
+
+## Estrutura principal
+
+```text
+src/main/java/io/github/pedrodevsi/fleetagent
+├── ai
+│   ├── api
+│   ├── application
+│   ├── config
+│   ├── dto
+│   ├── guardrail
+│   └── tools
+├── customer
+│   ├── api
+│   ├── application
+│   ├── domain
+│   └── repository
+├── knowledge
+│   ├── application
+│   ├── config
+│   ├── dto
+│   ├── infra
+│   ├── ingestion
+│   └── utils
+├── notification
+│   └── application
+└── rental
+    ├── api
+    │   └── event
+    ├── application
+    ├── domain
+    └── repository
+```
+
+## Problemas comuns
+
+### Falha ao conectar no Ollama
+
+```text
+Connection refused: localhost:11434
+```
+
+Inicie o serviço com `ollama serve` e confirme se os modelos foram baixados.
+
+### Modelo de embedding não encontrado
 
 ```bash
 ollama pull nomic-embed-text
 ```
 
-### Erro de dimensao no pgvector
+### Erro de dimensão no pgvector
 
-Verifique:
+O `nomic-embed-text` usado pelo projeto gera vetores com 768 dimensões. A propriedade abaixo e a coluna criada pela migration V3 precisam continuar compatíveis:
 
 ```yaml
 rag.vector-store.dimension: 768
 ```
 
-Essa dimensao precisa bater com o modelo de embedding.
+### Validação do Flyway falhou
 
-### Health check do RAG retorna DOWN
+Se o Flyway informar diferença de checksum, uma migration já aplicada foi alterada. Restaure o conteúdo original e crie uma nova migration para a mudança necessária.
 
-Possiveis causas:
+### Health check do RAG está `DOWN`
 
-- Postgres nao subiu.
-- Ollama nao esta rodando.
-- `nomic-embed-text` nao foi baixado.
-- Migrations nao rodaram.
-- Base de conhecimento ainda nao foi indexada.
-- `minScore` do retriever esta alto demais.
+Verifique:
 
-## Comandos Rapidos
+- se PostgreSQL e Ollama estão disponíveis;
+- se `nomic-embed-text` foi baixado;
+- se as migrations foram aplicadas;
+- se a base de conhecimento foi indexada;
+- se o `minScore` está adequado aos documentos.
 
-```bash
-ollama pull llama3.2
-ollama pull nomic-embed-text
-docker compose -f src/main/docker/docker-compose.yml up -d
-./mvnw spring-boot:run
-curl http://localhost:8080/actuator/health
-```
+## Limitações atuais e próximos passos
 
-## Observacao de Seguranca
+- a memória de conversa ainda é local e não persiste após reinicializações;
+- o módulo de notificação atualmente registra eventos em log;
+- autenticação e autorização ainda não foram implementadas;
+- observabilidade de chamadas à LLM, tokens, tools e qualidade do RAG está planejada;
+- os guardrails podem evoluir com uma estratégia mais ampla de proteção contra prompt injection;
+- testes de integração com PostgreSQL, pgvector e modelos reais podem ampliar a cobertura atual.
 
-Nao versionar chaves reais.
+Esses pontos são mantidos explícitos para separar o que já funciona das próximas etapas de aprendizado e evolução técnica.
 
-Use variaveis de ambiente:
+## Segurança
 
-```bash
-export GEMINI_API_KEY=sua-chave
-```
-
-O arquivo `application.yaml` deve conter apenas referencias como:
-
-```yaml
-gemini:
-  api-key: ${GEMINI_API_KEY:}
-```
+- não versione chaves, senhas reais ou arquivos `.env`;
+- configure credenciais por variáveis de ambiente;
+- mantenha regras de negócio e validações no backend, nunca apenas no prompt;
+- trate dados pessoais antes de registrar prompts, respostas ou argumentos das tools;
+- não considere o documento informado na conversa como autenticação suficiente em produção.
