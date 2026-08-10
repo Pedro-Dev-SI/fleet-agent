@@ -1,4 +1,4 @@
-# LangChain4j Rental Assistant
+# Fleet Agent
 
 Projeto de estudo com Spring Boot e LangChain4j para construir um assistente de locadora corporativa de veículos.
 
@@ -58,7 +58,7 @@ Cliente
 ## Arquitetura
 
 ```text
-com.br.langchain4j
+io.github.pedrodevsi.fleetagent
   ai
     api             Controller e tratamento de erros HTTP
     application     Interface do AI Service
@@ -148,9 +148,9 @@ localhost:5433
 Credenciais padrao:
 
 ```text
-database: langchain4j
-user: langchain4j
-password: langchain4j
+database: fleet_agent
+user: fleet_agent
+password: fleet_agent
 ```
 
 ## Configuracao da Aplicacao
@@ -193,9 +193,9 @@ rag:
   vector-store:
     host: ${RAG_VECTOR_HOST:localhost}
     port: ${RAG_VECTOR_PORT:5433}
-    database: ${RAG_VECTOR_DATABASE:langchain4j}
-    user: ${RAG_VECTOR_USER:langchain4j}
-    password: ${RAG_VECTOR_PASSWORD:langchain4j}
+    database: ${RAG_VECTOR_DATABASE:fleet_agent}
+    user: ${RAG_VECTOR_USER:fleet_agent}
+    password: ${RAG_VECTOR_PASSWORD:fleet_agent}
     table: ${RAG_VECTOR_TABLE:knowledge_embeddings}
     dimension: ${RAG_VECTOR_DIMENSION:768}
 ```

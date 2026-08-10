@@ -1,10 +1,10 @@
 spring:
   application:
-    name: langchain4j
+    name: fleet-agent
   datasource:
-    url: ${POSTGRES_URL:jdbc:postgresql://localhost:5433/langchain4j}
-    username: ${POSTGRES_USER:langchain4j}
-    password: ${POSTGRES_PASSWORD:langchain4j}
+    url: ${POSTGRES_URL:jdbc:postgresql://localhost:5433/fleet_agent}
+    username: ${POSTGRES_USER:fleet_agent}
+    password: ${POSTGRES_PASSWORD:fleet_agent}
     driver-class-name: org.postgresql.Driver
   jpa:
     hibernate:
@@ -36,9 +36,9 @@ rag:
   vector-store:
     host: ${RAG_VECTOR_HOST:localhost}
     port: ${RAG_VECTOR_PORT:5433}
-    database: ${RAG_VECTOR_DATABASE:langchain4j}
-    user: ${RAG_VECTOR_USER:langchain4j}
-    password: ${RAG_VECTOR_PASSWORD:langchain4j}
+    database: ${RAG_VECTOR_DATABASE:fleet_agent}
+    user: ${RAG_VECTOR_USER:fleet_agent}
+    password: ${RAG_VECTOR_PASSWORD:fleet_agent}
     table: ${RAG_VECTOR_TABLE:knowledge_embeddings}
     dimension: ${RAG_VECTOR_DIMENSION:768}
 

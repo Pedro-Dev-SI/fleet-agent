@@ -1,20 +1,21 @@
 services:
   postgres:
     image: pgvector/pgvector:pg17
-    container_name: langchain4j-postgres
+    container_name: fleet-agent-postgres
     environment:
-      POSTGRES_DB: langchain4j
-      POSTGRES_USER: langchain4j
-      POSTGRES_PASSWORD: langchain4j
+      POSTGRES_DB: fleet_agent
+      POSTGRES_USER: fleet_agent
+      POSTGRES_PASSWORD: fleet_agent
     ports:
       - "5433:5432"
     volumes:
-      - langchain4j-postgres-data:/var/lib/postgresql/data
+      - fleet-agent-postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U langchain4j -d langchain4j"]
+      test: ["CMD-SHELL", "pg_isready -U fleet_agent -d fleet_agent"]
       interval: 10s
       timeout: 5s
       retries: 5
 
 volumes:
-  langchain4j-postgres-data:
+  fleet-agent-postgres-data:
+    name: fleet-agent-postgres-data
