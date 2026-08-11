@@ -26,41 +26,44 @@ The diagram reflects the current repository implementation:
 
 ## Composition
 
-Use one large system boundary labeled “Fleet Agent — Spring Boot Modular Monolith”. No Java module is shown as an independently deployed service.
+The second supplied reference image defines the target density and hierarchy. The diagram uses a dark dotted canvas, a small number of large cards, short connectors, and generous spacing. No Java module is shown as an independently deployed service.
 
-The primary left-to-right runtime story is:
+The primary story is:
 
 `Client → POST /api/assistant → AI Service → Tool Calling → Java Business Logic → PostgreSQL → grounded response`
 
-The AI Service is the largest and most prominent component. Chat Memory, Guardrails, and the selected Chat Model appear as compact capabilities directly associated with it.
+Use four clear zones with approximately eleven large cards total:
 
-The Knowledge Module sits below the AI Service and contains two concise lanes:
+- Client: one prominent external actor card with the API route on its outgoing arrow.
+- AI Service — LangChain4j: Chat Memory, Guardrails, and LLM — Ollama/Gemini.
+- Tool Calling: Assistant Tools, Customer Tools, and Reservation Tools.
+- Java Business Logic: Rental and Customer.
 
-- Ingestion: Markdown → SHA-256 → recursive chunking 300/30 → `nomic-embed-text` → pgvector.
-- Retrieval: user query → query embedding → cosine search → top 3 at score ≥ 0.65 → grounded context with source/title/category → AI Service.
+Place one compact Knowledge / RAG card beside the AI Service and one large PostgreSQL + pgvector card beside the RAG and Java zones.
 
-Tool Calling sits to the right of the AI Service and contains:
+Only relationships essential to the story appear:
 
-- Assistant Tools: quotation and vehicle availability.
-- Customer Tools: customer lookup and registration.
-- Reservation Tools: create, review, and cancel, with an `@ToolMemoryId` annotation.
+- Client → AI Service: `POST /api/assistant`.
+- AI Service → Tool Calling: `Selects tools`.
+- AI Service ↔ Knowledge / RAG: `Retrieves context` and `Context + sources`.
+- Assistant and Reservation Tools → Rental.
+- Customer Tools → Customer.
+- Rental and Customer → PostgreSQL.
+- Knowledge / RAG ↔ PostgreSQL.
 
-Java Business Logic contains Customer Module and Rental Module. Tool connections terminate at the appropriate public use cases. Rental consumes Customer’s public API. A small secondary Notification Module receives reservation-created and reservation-cancelled events after commit.
+Omit ingestion steps, chunk sizes, similarity scores, table names, class names, method names, event names, and explanatory paragraphs from the canvas. These details belong in the LinkedIn caption or a second technical diagram. Omit Notification from this overview because it is secondary to the AI story.
 
-The database is one cylinder on the far right labeled “PostgreSQL 17 + pgvector”, divided visually into Domain Data and RAG Data.
+Do not use a large outer system boundary when it creates empty space or reduces the scale of the cards. Communicate the modular monolith through the grouped Java modules and a concise subtitle instead.
 
 ## Visual Language
 
-- Near-black or charcoal canvas with no white group backgrounds.
-- Violet for AI and LLM concerns, with a restrained glow only around AI Service.
-- Cyan for RAG and vector retrieval.
-- Amber for Tool Calling.
-- Green for deterministic Java/Spring modules.
-- Blue for the PostgreSQL cylinder.
-- Gray for supporting infrastructure and events.
-- Rounded cards, thin directional arrows, consistent spacing, and modern sans-serif typography.
-- Large labels and minimal copy suitable for LinkedIn mobile viewing.
-- Avoid crossed connectors and unnecessary empty space.
+- Near-black dotted canvas matching the visual density of the second reference.
+- Black or dark-gray cards with restrained colored accents.
+- Green Spring icons for AI, tools, RAG, and Java modules; a PostgreSQL icon for the database.
+- Rounded groups and large component cards.
+- Primary card labels at 24 px or larger; secondary text is optional and never required to understand the diagram.
+- Short orthogonal or gently curved connectors with labels of at most three words whenever possible.
+- No crossed connectors, long perimeter arrows, tiny annotations, table lists, or large empty boundaries.
 
 ## Required Message
 
@@ -74,9 +77,10 @@ It must not introduce microservices, Kafka, Redis, external authentication, or a
 
 After creation, verify that:
 
-1. The runtime path is understandable without reading every annotation.
-2. All Java modules remain inside the single monolith boundary.
-3. The RAG ingestion and retrieval paths are distinguishable.
-4. Tools connect to public use cases, not repositories.
-5. PostgreSQL uses cylinder notation and contains both domain and RAG sections.
-6. The AI Service is visually dominant and all major labels remain readable at LinkedIn scale.
+1. Client is immediately visible at normal zoom.
+2. The complete runtime story is understandable from the component names and arrows alone.
+3. The diagram contains approximately eleven cards and no detailed internal pipeline.
+4. Tools connect to the correct Java modules.
+5. No connector crosses another connector or runs around the entire canvas.
+6. Every required label remains readable when the full 16:9 image fits on a 1200 px-wide screen.
+7. The result is visually comparable in density and simplicity to the second supplied reference.
