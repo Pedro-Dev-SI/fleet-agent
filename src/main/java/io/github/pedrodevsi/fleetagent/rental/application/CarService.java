@@ -46,6 +46,11 @@ public class CarService implements VehicleAvailabilityUseCase {
                 .orElseThrow(() -> new CarModelNotFoundException("Modelo de carro não econtrado no banco de dados"));
     }
 
+    public Car findCarByModelForUpdate(String model) {
+        return carRepository.findByModelForUpdate(model)
+                .orElseThrow(() -> new CarModelNotFoundException("Modelo de carro não encontrado no banco de dados"));
+    }
+
     public boolean checkAvailabilityByCarModel(String carModel) {
         return carRepository.existsByModelAndStatus(carModel, StatusVeichleEnum.DISPONIVEL);
     }

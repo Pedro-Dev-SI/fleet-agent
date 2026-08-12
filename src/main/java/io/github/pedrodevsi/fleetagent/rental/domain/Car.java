@@ -80,4 +80,16 @@ public class Car {
     public void setStatus(StatusVeichleEnum status) {
         this.status = status;
     }
+
+    public void reserve() {
+        if (status != StatusVeichleEnum.DISPONIVEL) {
+            throw new IllegalStateException("Veículo se encontra indisponível no momento");
+        }
+
+        this.status = StatusVeichleEnum.RESERVADO;
+    }
+
+    public void release() {
+        this.status = StatusVeichleEnum.DISPONIVEL;
+    }
 }

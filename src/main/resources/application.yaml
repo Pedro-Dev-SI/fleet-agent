@@ -20,6 +20,8 @@ spring:
 app:
   ai:
     provider: ${APP_AI_PROVIDER:ollama}
+  rental:
+    reservation-completion-interval: ${RESERVATION_COMPLETION_INTERVAL:PT1M}
 
 gemini:
   api-key: ${GEMINI_API_KEY:}

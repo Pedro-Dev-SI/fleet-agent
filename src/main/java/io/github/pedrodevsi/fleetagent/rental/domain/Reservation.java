@@ -103,9 +103,9 @@ public class Reservation {
         return status;
     }
 
-    public void cancel() {
+    public boolean cancel() {
         if (status == ReservationStatusEnum.CANCELLED) {
-            throw new IllegalStateException("Reserva já está cancelada");
+            return false;
         }
 
         if (status == ReservationStatusEnum.COMPLETED) {
@@ -117,5 +117,25 @@ public class Reservation {
         }
 
         this.status = ReservationStatusEnum.CANCELLED;
+        this.car.release();
+        return true;
+    }
+
+    public boolean complete() {
+        if (status == ReservationStatusEnum.COMPLETED) {
+            return false;
+        }
+
+        if (status == ReservationStatusEnum.CANCELLED) {
+            throw new IllegalStateException("Reserva cancelada não pode ser concluída");
+        }
+
+        if (status != ReservationStatusEnum.CREATED && status != ReservationStatusEnum.CONFIRMED) {
+            throw new IllegalStateException("Reserva não pode ser concluída no status atual");
+        }
+
+        this.status = ReservationStatusEnum.COMPLETED;
+        this.car.release();
+        return true;
     }
 }

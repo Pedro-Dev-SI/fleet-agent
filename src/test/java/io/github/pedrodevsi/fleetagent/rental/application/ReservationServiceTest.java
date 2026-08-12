@@ -20,7 +20,11 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.context.ApplicationEventPublisher;
 
 import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -37,6 +41,14 @@ import static org.mockito.Mockito.when;
 class ReservationServiceTest {
 
     private static final String CUSTOMER_DOCUMENT = "123.456.789-00";
+    private static final Clock CLOCK = Clock.fixed(
+            Instant.parse("2026-07-31T12:00:00Z"),
+            ZoneOffset.UTC
+    );
+    private static final List<ReservationStatusEnum> ACTIVE_STATUSES = List.of(
+            ReservationStatusEnum.CREATED,
+            ReservationStatusEnum.CONFIRMED
+    );
 
     private final ReservationRepository reservationRepository = mock(ReservationRepository.class);
     private final CarService carService = mock(CarService.class);
@@ -46,7 +58,8 @@ class ReservationServiceTest {
             reservationRepository,
             carService,
             customerUseCase,
-            eventPublisher
+            eventPublisher,
+            CLOCK
     );
 
     @Test
@@ -62,11 +75,20 @@ class ReservationServiceTest {
                 ReservationStatusEnum.CREATED
         );
 
-        when(carService.findCarByModel("Onix")).thenReturn(car);
-        when(reservationRepository.findBySessionIdAndCarId(sessionId, null)).thenReturn(Optional.of(existingReservation));
+        CreateReservationRequest request = createRequest(sessionId);
+        when(customerUseCase.findByDocument(CUSTOMER_DOCUMENT)).thenReturn(foundCustomer(customerId));
+        when(carService.findCarByModelForUpdate("Onix")).thenReturn(car);
+        when(reservationRepository.findActiveIdempotentReservation(
+                sessionId,
+                customerId,
+                null,
+                request.startDate(),
+                request.finishDate(),
+                ACTIVE_STATUSES
+        )).thenReturn(Optional.of(existingReservation));
         when(customerUseCase.findById(customerId)).thenReturn(foundCustomer(customerId));
 
-        ReservationCreatedResponse response = reservationService.createReservation(createRequest(sessionId));
+        ReservationCreatedResponse response = reservationService.createReservation(request);
 
         assertThat(response.success()).isTrue();
         assertThat(response.message()).isEqualTo("Reserva já existe para esta sessão e veículo");
@@ -79,9 +101,6 @@ class ReservationServiceTest {
     @Test
     void shouldRejectReservationWhenEndDateIsNotAfterStartDate() {
         UUID sessionId = UUID.randomUUID();
-        when(carService.findCarByModel("Onix")).thenReturn(car());
-        when(reservationRepository.findBySessionIdAndCarId(sessionId, null)).thenReturn(Optional.empty());
-
         CreateReservationRequest request = new CreateReservationRequest(
                 sessionId,
                 CUSTOMER_DOCUMENT,
@@ -102,8 +121,6 @@ class ReservationServiceTest {
     @Test
     void shouldRejectReservationWhenCustomerDoesNotExist() {
         UUID sessionId = UUID.randomUUID();
-        when(carService.findCarByModel("Onix")).thenReturn(car());
-        when(reservationRepository.findBySessionIdAndCarId(sessionId, null)).thenReturn(Optional.empty());
         when(customerUseCase.findByDocument(CUSTOMER_DOCUMENT))
                 .thenReturn(new CustomerLookupResponse(false, null, "Cliente não encontrado"));
 
@@ -120,10 +137,10 @@ class ReservationServiceTest {
     void shouldRejectReservationWhenCarIsUnavailable() {
         UUID sessionId = UUID.randomUUID();
         UUID customerId = UUID.randomUUID();
-        when(carService.findCarByModel("Onix")).thenReturn(car());
-        when(reservationRepository.findBySessionIdAndCarId(sessionId, null)).thenReturn(Optional.empty());
         when(customerUseCase.findByDocument(CUSTOMER_DOCUMENT)).thenReturn(foundCustomer(customerId));
-        when(carService.checkAvailabilityByCarModel("Onix")).thenReturn(false);
+        Car unavailableCar = car();
+        unavailableCar.setStatus(StatusVeichleEnum.RESERVADO);
+        when(carService.findCarByModelForUpdate("Onix")).thenReturn(unavailableCar);
 
         ReservationCreatedResponse response = reservationService.createReservation(createRequest(sessionId));
 
@@ -144,10 +161,8 @@ class ReservationServiceTest {
         Reservation savedReservation = mock(Reservation.class);
 
         when(car.getId()).thenReturn(carId);
-        when(carService.findCarByModel("Onix")).thenReturn(car);
-        when(reservationRepository.findBySessionIdAndCarId(sessionId, carId)).thenReturn(Optional.empty());
         when(customerUseCase.findByDocument(CUSTOMER_DOCUMENT)).thenReturn(foundCustomer(customerId));
-        when(carService.checkAvailabilityByCarModel("Onix")).thenReturn(true);
+        when(carService.findCarByModelForUpdate("Onix")).thenReturn(car);
         when(customerUseCase.findById(customerId)).thenReturn(foundCustomer(customerId));
         when(savedReservation.getId()).thenReturn(reservationId);
         when(savedReservation.getCustomerId()).thenReturn(customerId);
@@ -198,7 +213,7 @@ class ReservationServiceTest {
         );
 
         when(customerUseCase.findByDocument(CUSTOMER_DOCUMENT)).thenReturn(foundCustomer(customerId));
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
         when(reservationRepository.save(reservation)).thenReturn(reservation);
 
         ReservationCancelledResponse response = reservationService.cancelReservation(
@@ -235,7 +250,7 @@ class ReservationServiceTest {
 
         assertThat(response.success()).isFalse();
         assertThat(response.message()).isEqualTo("Cliente não encontrado");
-        verify(reservationRepository, never()).findById(any());
+        verify(reservationRepository, never()).findByIdForUpdate(any());
         verifyNoCancellationSideEffects();
     }
 
@@ -244,7 +259,7 @@ class ReservationServiceTest {
         UUID customerId = UUID.randomUUID();
         UUID reservationId = UUID.randomUUID();
         when(customerUseCase.findByDocument(CUSTOMER_DOCUMENT)).thenReturn(foundCustomer(customerId));
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.empty());
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.empty());
 
         ReservationCancelledResponse response = reservationService.cancelReservation(
                 new CancelReservationRequest(reservationId, CUSTOMER_DOCUMENT)
@@ -270,7 +285,7 @@ class ReservationServiceTest {
         );
 
         when(customerUseCase.findByDocument(CUSTOMER_DOCUMENT)).thenReturn(foundCustomer(informedCustomerId));
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
 
         ReservationCancelledResponse response = reservationService.cancelReservation(
                 new CancelReservationRequest(reservationId, CUSTOMER_DOCUMENT)
@@ -284,10 +299,10 @@ class ReservationServiceTest {
     }
 
     @Test
-    void shouldRejectCancellationWhenReservationIsAlreadyCancelled() {
+    void shouldTreatRepeatedCancellationAsSuccessfulWithoutSideEffects() {
         UUID customerId = UUID.randomUUID();
         UUID reservationId = UUID.randomUUID();
-        Car car = reservedCar(UUID.randomUUID());
+        Car car = car();
         Reservation reservation = reservation(
                 reservationId,
                 customerId,
@@ -297,15 +312,16 @@ class ReservationServiceTest {
         );
 
         when(customerUseCase.findByDocument(CUSTOMER_DOCUMENT)).thenReturn(foundCustomer(customerId));
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
 
         ReservationCancelledResponse response = reservationService.cancelReservation(
                 new CancelReservationRequest(reservationId, CUSTOMER_DOCUMENT)
         );
 
-        assertThat(response.success()).isFalse();
-        assertThat(response.message()).isEqualTo("Reserva já está cancelada");
-        assertThat(car.getStatus()).isEqualTo(StatusVeichleEnum.RESERVADO);
+        assertThat(response.success()).isTrue();
+        assertThat(response.status()).isEqualTo("CANCELLED");
+        assertThat(response.message()).isEqualTo("Reserva já estava cancelada");
+        assertThat(car.getStatus()).isEqualTo(StatusVeichleEnum.DISPONIVEL);
         verifyNoCancellationSideEffects();
     }
 
@@ -323,7 +339,7 @@ class ReservationServiceTest {
         );
 
         when(customerUseCase.findByDocument(CUSTOMER_DOCUMENT)).thenReturn(foundCustomer(customerId));
-        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservationId)).thenReturn(Optional.of(reservation));
 
         ReservationCancelledResponse response = reservationService.cancelReservation(
                 new CancelReservationRequest(reservationId, CUSTOMER_DOCUMENT)
@@ -333,6 +349,55 @@ class ReservationServiceTest {
         assertThat(response.message()).isEqualTo("Reserva concluída não pode ser cancelada");
         assertThat(car.getStatus()).isEqualTo(StatusVeichleEnum.RESERVADO);
         verifyNoCancellationSideEffects();
+    }
+
+    @Test
+    void shouldRejectReservationWhenStartDateIsNotInTheFuture() {
+        UUID sessionId = UUID.randomUUID();
+        UUID customerId = UUID.randomUUID();
+        Car car = car();
+        CreateReservationRequest request = new CreateReservationRequest(
+                sessionId,
+                CUSTOMER_DOCUMENT,
+                LocalDateTime.parse("2026-07-31T12:00:00"),
+                LocalDateTime.parse("2026-08-02T12:00:00"),
+                "Onix"
+        );
+
+        when(customerUseCase.findByDocument(CUSTOMER_DOCUMENT)).thenReturn(foundCustomer(customerId));
+        when(carService.findCarByModelForUpdate("Onix")).thenReturn(car);
+
+        ReservationCreatedResponse response = reservationService.createReservation(request);
+
+        assertThat(response.success()).isFalse();
+        assertThat(response.message()).isEqualTo("Data de retirada deve estar no futuro");
+        verify(reservationRepository, never()).save(any());
+        verify(eventPublisher, never()).publishEvent(any(ReservationCreatedEvent.class));
+    }
+
+    @Test
+    void shouldReturnMostRecentActiveReservationForCustomer() {
+        UUID customerId = UUID.randomUUID();
+        Reservation reservation = reservation(
+                UUID.randomUUID(),
+                customerId,
+                UUID.randomUUID(),
+                car(),
+                ReservationStatusEnum.CONFIRMED
+        );
+
+        when(customerUseCase.findByDocument(CUSTOMER_DOCUMENT)).thenReturn(foundCustomer(customerId));
+        when(reservationRepository.findFirstByCustomerIdAndStatusInOrderByStartDateDesc(
+                customerId,
+                ACTIVE_STATUSES
+        ))
+                .thenReturn(Optional.of(reservation));
+        when(customerUseCase.findById(customerId)).thenReturn(foundCustomer(customerId));
+
+        ReservationCreatedResponse response = reservationService.findByCustomerDocument(CUSTOMER_DOCUMENT);
+
+        assertThat(response.success()).isTrue();
+        assertThat(response.reservation().status()).isEqualTo("CONFIRMED");
     }
 
     private void verifyNoCancellationSideEffects() {

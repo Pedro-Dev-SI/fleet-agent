@@ -14,12 +14,14 @@ import io.github.pedrodevsi.fleetagent.rental.api.CreateReservationRequest;
 import io.github.pedrodevsi.fleetagent.rental.api.ReservationCreatedResponse;
 import io.github.pedrodevsi.fleetagent.rental.api.ReservationResponse;
 import io.github.pedrodevsi.fleetagent.rental.domain.enums.ReservationStatusEnum;
-import io.github.pedrodevsi.fleetagent.rental.domain.enums.StatusVeichleEnum;
 import io.github.pedrodevsi.fleetagent.rental.repository.ReservationRepository;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
+import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.Objects;
 import java.util.UUID;
@@ -27,24 +29,31 @@ import java.util.UUID;
 @Service
 public class ReservationService implements ReservationUseCase {
 
-
+    private static final List<ReservationStatusEnum> ACTIVE_STATUSES = List.of(
+            ReservationStatusEnum.CREATED,
+            ReservationStatusEnum.CONFIRMED
+    );
     private final ReservationRepository reservationRepository;
     private final CarService carService;
     private final CustomerUseCase customerUseCase;
     private final ApplicationEventPublisher eventPublisher;
+    private final Clock clock;
 
     public ReservationService(
             ReservationRepository reservationRepository,
             CarService carService,
             CustomerUseCase customerUseCase,
-            ApplicationEventPublisher eventPublisher
+            ApplicationEventPublisher eventPublisher,
+            Clock clock
     ) {
         this.reservationRepository = reservationRepository;
         this.carService = carService;
         this.customerUseCase = customerUseCase;
         this.eventPublisher = eventPublisher;
+        this.clock = clock;
     }
 
+    @Transactional(readOnly = true)
     public ReservationCreatedResponse findByCustomerDocument(String document) {
 
         if (document == null || document.isBlank()) {
@@ -65,7 +74,11 @@ public class ReservationService implements ReservationUseCase {
             );
         }
 
-        Optional<Reservation> reservation = reservationRepository.findByCustomerId(customerResponse.customer().id());
+        Optional<Reservation> reservation = reservationRepository
+                .findFirstByCustomerIdAndStatusInOrderByStartDateDesc(
+                        customerResponse.customer().id(),
+                        ACTIVE_STATUSES
+                );
 
         return reservation.map(value -> new ReservationCreatedResponse(
                 true,
@@ -90,16 +103,6 @@ public class ReservationService implements ReservationUseCase {
             );
         }
 
-        var reservationOp = findReservationBySessionIdAndCarModelOptional(reservationRequest.sessionId(), reservationRequest.carModel());
-
-        if (reservationOp.isPresent()) {
-            return new ReservationCreatedResponse(
-                    true,
-                    toResponse(reservationOp.get()),
-                    "Reserva já existe para esta sessão e veículo"
-            );
-        }
-
         if (reservationRequest.finishDate().isBefore(reservationRequest.startDate())
                 || reservationRequest.finishDate().isEqual(reservationRequest.startDate())) {
             return new ReservationCreatedResponse(
@@ -111,7 +114,7 @@ public class ReservationService implements ReservationUseCase {
 
         CustomerLookupResponse customerLookup = customerUseCase.findByDocument(reservationRequest.document());
 
-        if (!customerLookup.found()) {
+        if (!customerLookup.found() || customerLookup.customer() == null) {
             return new ReservationCreatedResponse(
                     false,
                     null,
@@ -120,17 +123,38 @@ public class ReservationService implements ReservationUseCase {
         }
 
         CustomerResponse customer = customerLookup.customer();
+        Car car = carService.findCarByModelForUpdate(reservationRequest.carModel());
 
-        if (!carService.checkAvailabilityByCarModel(reservationRequest.carModel())) {
+        Optional<Reservation> existingReservation = reservationRepository.findActiveIdempotentReservation(
+                reservationRequest.sessionId(),
+                customer.id(),
+                car.getId(),
+                reservationRequest.startDate(),
+                reservationRequest.finishDate(),
+                ACTIVE_STATUSES
+        );
+
+        if (existingReservation.isPresent()) {
             return new ReservationCreatedResponse(
-                    false,
-                    null,
-                    "Veículo se encontra indisponível no momento"
+                    true,
+                    toResponse(existingReservation.get()),
+                    "Reserva já existe para esta sessão e veículo"
             );
         }
 
-        Car car = carService.findCarByModel(reservationRequest.carModel());
-        car.setStatus(StatusVeichleEnum.RESERVADO);
+        if (!reservationRequest.startDate().isAfter(LocalDateTime.now(clock))) {
+            return new ReservationCreatedResponse(
+                    false,
+                    null,
+                    "Data de retirada deve estar no futuro"
+            );
+        }
+
+        try {
+            car.reserve();
+        } catch (IllegalStateException exception) {
+            return new ReservationCreatedResponse(false, null, exception.getMessage());
+        }
 
         Reservation reservation = new Reservation(
                 car,
@@ -171,7 +195,7 @@ public class ReservationService implements ReservationUseCase {
             return cancellationFailure(request.reservationId(), customerLookup.message());
         }
 
-        Optional<Reservation> reservationOptional = reservationRepository.findById(request.reservationId());
+        Optional<Reservation> reservationOptional = reservationRepository.findByIdForUpdate(request.reservationId());
 
         if (reservationOptional.isEmpty()) {
             return cancellationFailure(request.reservationId(), "Reserva não encontrada");
@@ -184,21 +208,28 @@ public class ReservationService implements ReservationUseCase {
             return cancellationFailure(request.reservationId(), "Reserva não pertence ao cliente informado");
         }
 
+        boolean cancelled;
         try {
-            reservation.cancel();
+            cancelled = reservation.cancel();
         } catch (IllegalStateException exception) {
             return cancellationFailure(request.reservationId(), exception.getMessage());
         }
 
-        Car car = reservation.getCar();
-        car.setStatus(StatusVeichleEnum.DISPONIVEL);
+        if (!cancelled) {
+            return new ReservationCancelledResponse(
+                    true,
+                    reservation.getId(),
+                    reservation.getStatus().name(),
+                    "Reserva já estava cancelada"
+            );
+        }
 
         reservationRepository.save(reservation);
 
         eventPublisher.publishEvent(new ReservationCancelledEvent(
                 reservation.getId(),
                 reservation.getCustomerId(),
-                car.getId()
+                reservation.getCar().getId()
         ));
 
         return new ReservationCancelledResponse(
@@ -207,14 +238,6 @@ public class ReservationService implements ReservationUseCase {
                 reservation.getStatus().name(),
                 "Reserva cancelada com sucesso"
         );
-    }
-
-    private Optional<Reservation> findReservationBySessionIdAndCarModelOptional(UUID sessionId, String carModel) {
-
-        Car car = carService.findCarByModel(carModel);
-
-        return reservationRepository.findBySessionIdAndCarId(sessionId, car.getId());
-
     }
 
     private ReservationResponse toResponse(Reservation reservation) {

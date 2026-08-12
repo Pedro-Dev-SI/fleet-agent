@@ -17,6 +17,8 @@ Por meio de uma única API conversacional, o assistente consegue:
 - criar reservas vinculadas ao cliente, veículo e sessão da conversa;
 - consultar reservas pelo documento do cliente;
 - cancelar reservas e disponibilizar novamente o veículo;
+- concluir automaticamente reservas vencidas e liberar o veículo;
+- impedir reservas ativas concorrentes para o mesmo veículo;
 - manter o contexto das últimas mensagens por `sessionId`;
 - citar a fonte usada nas respostas baseadas na base de conhecimento;
 - bloquear solicitações fora do domínio e respostas inválidas com guardrails;
@@ -108,6 +110,8 @@ As tools são adaptadores entre a LLM e os contratos públicos da aplicação:
 | Reservas | criar, consultar e cancelar reserva |
 
 Na criação de reserva, o `@ToolMemoryId` injeta o identificador da conversa na operação. O backend continua responsável por validar datas, existência do cliente, disponibilidade do veículo, propriedade da reserva e transições de status.
+
+O fluxo usa um bloqueio pessimista curto sobre o veículo durante a criação e uma restrição parcial no PostgreSQL como proteção final contra reservas ativas concorrentes. Repetições da mesma chamada são idempotentes apenas para reservas ativas com a mesma sessão, cliente, veículo e período. Reservas vencidas são concluídas por um job interno configurável por `RESERVATION_COMPLETION_INTERVAL`, sem participação da IA.
 
 ### Guardrails
 
@@ -308,6 +312,7 @@ O Hibernate está configurado com `ddl-auto: validate`. A evolução do banco pe
 | V8 | `create_customer` | Cria clientes com documento único |
 | V9 | `add_customer_to_reservation` | Relaciona reservas aos clientes |
 | V10 | `add_status_to_reservation` | Adiciona o estado da reserva |
+| V11 | `harden_reservation_consistency` | Protege período, identidade do veículo e unicidade de reserva ativa |
 
 Uma migration aplicada não deve ser editada. Novas alterações de schema devem ser adicionadas em uma nova versão.
 
@@ -331,6 +336,9 @@ A suíte atual cobre:
 - criação, consulta e cancelamento de reservas;
 - efeitos esperados no veículo e no repositório;
 - publicação dos eventos de reserva;
+- conclusão automática de reservas vencidas;
+- idempotência e consulta determinística de reservas ativas;
+- invariantes de persistência em PostgreSQL com Testcontainers;
 - cenários de erro sem persistência ou evento indevido;
 - guardrails de entrada e saída;
 - carregamento básico da aplicação;

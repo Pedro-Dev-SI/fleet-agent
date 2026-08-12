@@ -17,6 +17,8 @@ Through a single conversational API, the assistant can:
 - create reservations linked to the customer, vehicle, and conversation session;
 - retrieve reservations using the customer's document;
 - cancel reservations and make the vehicle available again;
+- automatically complete expired reservations and release the vehicle;
+- prevent concurrent active reservations for the same vehicle;
 - retain the context of the latest messages by `sessionId`;
 - cite the source used in answers based on the knowledge base;
 - block out-of-domain requests and invalid responses with guardrails;
@@ -108,6 +110,8 @@ The tools are adapters between the LLM and the application's public contracts:
 | Reservations | Create, retrieve, and cancel a reservation |
 
 When a reservation is created, `@ToolMemoryId` injects the conversation identifier into the operation. The backend remains responsible for validating dates, customer existence, vehicle availability, reservation ownership, and status transitions.
+
+The flow uses a short pessimistic lock on the vehicle during creation and a PostgreSQL partial constraint as the final safeguard against concurrent active reservations. Repeated calls are idempotent only for active reservations with the same session, customer, vehicle, and period. An internal job completes expired reservations at the interval configured by `RESERVATION_COMPLETION_INTERVAL`, without involving the AI.
 
 ### Guardrails
 
@@ -308,6 +312,7 @@ Hibernate is configured with `ddl-auto: validate`. Database evolution is managed
 | V8 | `create_customer` | Creates customers with a unique document |
 | V9 | `add_customer_to_reservation` | Associates reservations with customers |
 | V10 | `add_status_to_reservation` | Adds the reservation status |
+| V11 | `harden_reservation_consistency` | Protects the period, vehicle identity, and active-reservation uniqueness |
 
 An applied migration must not be edited. New schema changes must be added in a new version.
 
@@ -331,6 +336,9 @@ The current suite covers:
 - reservation creation, retrieval, and cancellation;
 - expected effects on the vehicle and repository;
 - publication of reservation events;
+- automatic completion of expired reservations;
+- idempotency and deterministic active-reservation retrieval;
+- PostgreSQL persistence invariants verified with Testcontainers;
 - error scenarios without unintended persistence or events;
 - input and output guardrails;
 - basic application loading;
